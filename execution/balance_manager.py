@@ -26,8 +26,17 @@ class BalanceManager:
         Checks if the bot has enough allocated funds (virtual) AND if the wallet has enough funds (physical).
         Async because it calls exchange.get_balance.
         """
-        quote_currency = "USDT"  # Placeholder
-        base_currency = "BTC"
+        # Fetch bot to get dynamic pair
+        bot = self.bot_repo.get_bot(bot_id)
+        if not bot:
+            logger.error(f"Bot {bot_id} not found during fund check.")
+            return False
+
+        try:
+            base_currency, quote_currency = bot.pair.split("/")
+        except ValueError:
+            logger.error(f"Bot {bot_id} has invalid pair format: {bot.pair}")
+            return False
 
         required_amount = quantity * price if side == "BUY" else quantity
         asset = quote_currency if side == "BUY" else base_currency

@@ -27,6 +27,7 @@ class BacktestEngine:
         amount_per_grid: float,
     ):
         self.orders = []
+        self.grid_step = (upper_limit - lower_limit) / grid_count
         levels = calculate_grid_levels(lower_limit, upper_limit, grid_count)
 
         # Determine current position in grid?
@@ -72,8 +73,8 @@ class BacktestEngine:
                 self.asset_balance += order["qty"]
                 executed = True
 
-                # Place Sell Grid above (Simple +1 grid logic for backtest)
-                # Ideally should use the full grid logic
+                # Place Sell Grid above
+                new_orders.append(self._get_counter_order(order))
 
             elif order["side"] == "SELL" and high >= order["price"]:
                 # Sell Filled
@@ -82,6 +83,9 @@ class BacktestEngine:
                 self.balance += revenue - fee
                 self.asset_balance -= order["qty"]
                 executed = True
+
+                # Place Buy Grid below
+                new_orders.append(self._get_counter_order(order))
 
             if executed:
                 filled_indices.append(i)
@@ -99,7 +103,33 @@ class BacktestEngine:
         for i in sorted(filled_indices, reverse=True):
             del self.orders[i]
 
-        # Add new orders (Not implemented fully in this simple loop, requires strategy state)
+        # Add new orders (Counter-orders)
+        # We need the step size from setup_grid.
+        # Since setup_grid didn't save it, let's recalculate or save it in init/setup.
+        # For now, let's assume we can derive it or pass it.
+        # Better: Store 'grid_step' in class.
+
+        # NOTE: self.grid_step must be defined in setup_grid
+
+        for order in new_orders:
+            self.orders.append(order)
+
+    def _get_counter_order(self, filled_order):
+        step = self.grid_step
+        if filled_order["side"] == "BUY":
+            # Buy Filled -> Place Sell High
+            return {
+                "side": "SELL",
+                "price": filled_order["price"] + step,
+                "qty": filled_order["qty"],
+            }
+        else:
+            # Sell Filled -> Place Buy Low
+            return {
+                "side": "BUY",
+                "price": filled_order["price"] - step,
+                "qty": filled_order["qty"],
+            }
 
     def generate_report(self):
         return {

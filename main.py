@@ -11,8 +11,6 @@ from database.repositories import BotRepository, OrderRepository, TradeRepositor
 from execution.order_manager import OrderManager
 from execution.balance_manager import BalanceManager
 from exchange.factory import ExchangeFactory
-from execution.balance_manager import BalanceManager
-from exchange.factory import ExchangeFactory
 from strategies.auto_tuner import AutoTuner
 from strategies.grid_strategy import GridStrategy
 from utils.logger import setup_logger
@@ -46,7 +44,11 @@ active_bots = {}  # bot_id -> {'task': Task, 'exchange': ExchangeInterface}
 
 
 async def bot_loop(
-    bot_id: int, exchange_api, order_manager: OrderManager, auto_tuner: AutoTuner
+    bot_id: int,
+    exchange_api,
+    order_manager: OrderManager,
+    auto_tuner: AutoTuner,
+    grid_strategy: GridStrategy,
 ):
     """
     Real-time WebSocket Loop.
@@ -75,19 +77,19 @@ async def bot_loop(
                 health_system.heartbeat()
 
                 # C. Checks
-                # 1. Sync Orders (Maybe not on EVERY tick? Or rely on WS for orders too?)
-                # For basic implementation, we can sync less frequently or on signal.
-                # Let's sync every tick for safety if latency permits, OR usage of watch_orders (ToDo)
-                # But to avoid API blocking, let's trust WS price but sync orders occasionally or on price cross?
+                # 1. Sync Orders
                 # Optimization: Async sync
-                await order_manager.sync_orders(bot_id)
+                filled_orders = await order_manager.sync_orders(bot_id)
 
-                # 2. Auto Tune Check
+                # 2. Grid Logic (Replace Filled Orders)
+                if filled_orders:
+                    # We have filled orders, trigger grid update
+                    # Note: We passed 'bot' object retrieved earlier
+                    await grid_strategy.update_grid(bot, filled_orders)
+
+                # 3. Auto Tune Check (Separate task usually, but here sequentially)
                 # action = auto_tuner.check_adjustment(bot, current_price)
                 # if action != NONE: await execute_adjustment...
-
-                # 3. Grid Logic (Check if grid crossed) -> Place/Cancel
-                # TODO: Implement Grid Logic here
 
             except Exception as e:
                 logger.error(f"Bot {bot_id} Loop Error: {e}")
@@ -161,7 +163,9 @@ async def start_bot(config: BotCreate, background_tasks: BackgroundTasks):
     await grid_strategy.place_initial_grid(bot, ticker["price"])
 
     # 5. Start Loop
-    task = asyncio.create_task(bot_loop(bot.id, exchange, order_manager, auto_tuner))
+    task = asyncio.create_task(
+        bot_loop(bot.id, exchange, order_manager, auto_tuner, grid_strategy)
+    )
     active_bots[bot.id] = {"task": task, "exchange": exchange}
 
     return {"status": "started", "bot_id": bot.id}

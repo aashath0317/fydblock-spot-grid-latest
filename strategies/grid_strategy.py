@@ -98,11 +98,68 @@ class GridStrategy:
                 logger.error(f"Bot {bot.id}: Rebalance Market Buy Failed: {e}")
                 raise  # Stop startup if we can't buy assets
 
-    async def update_grid(self, bot: Bot, current_price: float):
+    async def update_grid(self, bot: Bot, filled_orders: List[dict]):
         """
-        Checks if orders need to be refilled (Buy Low -> Sell High logic).
-        For V1: Simple implementation - if a level is hit (filled), place the opposite order.
+        Reacts to filled orders by placing the counter-order.
+        Buy Low at Price X -> Place Sell High at Price X + Step
+        Sell High at Price Y -> Place Buy Low at Price Y - Step
         """
-        # This requires knowing WHICH order was filled.
-        # In the main loop, we sync orders. If an order becomes FILLED, we trigger this.
-        pass  # To be implemented in next step if requested, or basic structure now.
+        if not filled_orders:
+            return
+
+        # Calculate Grid Step
+        # Assuming Arithmetic for V1 MVP
+        # Step = (Upper - Lower) / Count
+        step = (bot.upper_limit - bot.lower_limit) / bot.grid_count
+
+        orders_to_place = []
+
+        for filled in filled_orders:
+            # Logic:
+            # If we bought at 50000, we want to sell at 50000 + step.
+            # If we sold at 50100, we want to buy back at 50100 - step.
+
+            new_side = "SELL" if filled["side"] == "BUY" else "BUY"
+
+            # TODO: Handle Geometric logic here if needed check bot.grid_type (not in V1 model yet, defaults arithmetic)
+
+            if new_side == "SELL":
+                new_price = filled["price"] + step
+            else:
+                new_price = filled["price"] - step
+
+            # Validation
+            if new_price > bot.upper_limit or new_price < bot.lower_limit:
+                logger.warning(
+                    f"Bot {bot.id}: Counter-order price {new_price} out of bounds. Skipping."
+                )
+                continue
+
+            # Qty Logic:
+            # Keep same Quantity (Fixed Base) or Keep same Value?
+            # Standard Grid: Buy 0.01 BTC, Sell 0.01 BTC. (Base Asset Preservation)
+            qty = filled["quantity"]
+
+            # Margin for Profit?
+            # If we buy 0.01 at 50k, cost 500.
+            # Sell 0.01 at 51k, get 510. Profit 10 USDT.
+            # This works.
+
+            # Check Balance?
+            # If we sold, we have USDT to buy back.
+            # If we bought, we have BTC to sell.
+            # So theoretically we always have funds.
+
+            orders_to_place.append(
+                {
+                    "symbol": bot.pair,
+                    "side": new_side,
+                    "type": "LIMIT",
+                    "quantity": qty,
+                    "price": round(new_price, 2),
+                }
+            )
+
+        if orders_to_place:
+            logger.info(f"Bot {bot.id}: Placing {len(orders_to_place)} counter-orders.")
+            await self.order_manager.place_orders(bot.id, orders_to_place)

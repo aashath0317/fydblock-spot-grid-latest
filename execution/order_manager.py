@@ -76,10 +76,16 @@ class OrderManager:
                     f"Bot {bot_id}: Failed to cancel order {order.exchange_order_id}: {e}"
                 )
 
-    async def sync_orders(self, bot_id: int):
+    async def sync_orders(self, bot_id: int) -> List[dict]:
+        """
+        Reconciliation Logic: 'Vanish Handling'
+        Matches DB Orders vs Exchange Orders.
+        Returns a list of orders that were confirmed FILLED in this sync.
+        """
+        filled_orders = []
         db_open_orders = self.order_repo.get_open_orders(bot_id)
         if not db_open_orders:
-            return
+            return filled_orders
 
         symbol = db_open_orders[0].symbol
         try:
@@ -87,7 +93,7 @@ class OrderManager:
             exchange_open_orders = await self.exchange.fetch_open_orders(symbol)
         except Exception as e:
             logger.error(f"Sync failed for bot {bot_id}: {e}")
-            return
+            return filled_orders
 
         exchange_map = {o["client_order_id"]: o for o in exchange_open_orders}
 
@@ -99,9 +105,27 @@ class OrderManager:
             logger.warning(
                 f"Bot {bot_id}: Order {db_order.client_order_id} vanished. Checking status..."
             )
-            await self._handle_vanished_order(bot_id, db_order)
+            is_filled = await self._handle_vanished_order(bot_id, db_order)
+            if is_filled:
+                # Return the DB order object or a dict representation
+                # We need details to place the counter order (price, qty)
+                filled_orders.append(
+                    {
+                        "symbol": db_order.symbol,
+                        "side": db_order.side,
+                        "price": db_order.price,
+                        "quantity": db_order.quantity,
+                        "id": db_order.id,
+                    }
+                )
 
-    async def _handle_vanished_order(self, bot_id: int, db_order):
+        return filled_orders
+
+    async def _handle_vanished_order(self, bot_id: int, db_order) -> bool:
+        """
+        Queries specific order to find final state.
+        Returns True if filled, False otherwise.
+        """
         try:
             # Async fetch
             order_info = await self.exchange.fetch_order(
@@ -124,14 +148,19 @@ class OrderManager:
                 logger.info(
                     f"Bot {bot_id}: Order {db_order.client_order_id} confirmed FILLED."
                 )
+                return True
 
             elif order_info["status"] == "canceled":
                 self.order_repo.update_status(db_order.client_order_id, "CANCELED")
                 logger.info(
                     f"Bot {bot_id}: Order {db_order.client_order_id} was CANCELED."
                 )
+                return False
 
         except Exception as e:
             logger.error(
                 f"Failed to resolve vanished order {db_order.client_order_id}: {e}"
             )
+            return False
+
+        return False
