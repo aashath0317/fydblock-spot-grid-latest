@@ -1,0 +1,8 @@
+sqlalchemy
+aiosqlite
+ccxt
+pydantic
+fastapi
+uvicorn
+python-dotenv
+requests
