@@ -28,6 +28,8 @@ class BacktestEngine:
         amount_per_grid: float,
     ):
         self.orders = []
+        self.lower_limit = lower_limit
+        self.upper_limit = upper_limit
         self.grid_step = (upper_limit - lower_limit) / grid_count
         levels = calculate_grid_levels(lower_limit, upper_limit, grid_count)
 
@@ -82,7 +84,9 @@ class BacktestEngine:
                 executed = True
 
                 # Place Sell Grid above
-                new_orders.append(self._get_counter_order(order))
+                counter_order = self._get_counter_order(order)
+                if counter_order:
+                    new_orders.append(counter_order)
 
             elif order["side"] == "SELL" and high >= order["price"]:
                 # Sell Filled
@@ -93,7 +97,9 @@ class BacktestEngine:
                 executed = True
 
                 # Place Buy Grid below
-                new_orders.append(self._get_counter_order(order))
+                counter_order = self._get_counter_order(order)
+                if counter_order:
+                    new_orders.append(counter_order)
 
             if executed:
                 filled_indices.append(i)

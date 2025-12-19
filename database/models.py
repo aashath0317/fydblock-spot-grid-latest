@@ -21,6 +21,11 @@ class Bot(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(String, index=True, nullable=False)  # Link to frontend user
     pair = Column(String, nullable=False)  # e.g. "BTC/USDT"
+
+    # Credentials (WARNING: Plaintext for demo. Production strictly requires encryption)
+    api_key = Column(String, nullable=True)
+    secret_key = Column(String, nullable=True)
+
     status = Column(String, default="STOPPED")  # RUNNING, PAUSED, STOPPED
     mode = Column(String, default="MANUAL")  # AUTO, MANUAL
 

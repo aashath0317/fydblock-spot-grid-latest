@@ -101,12 +101,7 @@ class AutoTuner:
             return {
                 "lower_limit": new_lower,
                 "upper_limit": bot.upper_limit,  # Keep Upper
-                "grid_count": int(
-                    bot.grid_count * 1.5
-                ),  # Increase grid count to cover wider range?
-                # User said: "grid gaps are increase". means grid density decreases.
-                # So we might keep grid count same, or increase slightly.
-                # "grid gaps are increase" -> Same count, wider range.
+                "grid_count": bot.grid_count,  # Keep count same -> Wider gaps (Density decreases)
             }
 
         return {}

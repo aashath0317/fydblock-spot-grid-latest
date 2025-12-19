@@ -177,6 +177,38 @@ async def bot_loop(bot_id: int, exchange_api):
 async def lifespan(app: FastAPI):
     await db.init_db()
     logger.info("System Startup: DB Initialized.")
+
+    # 2. Restart Logic
+    async with db.get_session() as session:
+        repo = BotRepository(session)
+        running_bots = await repo.get_running_bots()
+
+        if running_bots:
+            logger.info(f"System Startup: Resuming {len(running_bots)} active bots...")
+
+            for bot in running_bots:
+                try:
+                    # A. Reconnect Exchange
+                    # Assuming Binance for now (Store exchange_id in DB later?)
+                    exchange = ExchangeFactory.create_exchange(
+                        "binance", bot.api_key, bot.secret_key
+                    )
+
+                    # B. Start Loop (Managers are created inside loop pre-check or below?)
+                    # Bot loop creates its own managers inside, BUT it needs `exchange_api` passed.
+                    # It DOES NOT need managers passed (refactored earlier).
+                    # Wait, look at `bot_loop` signature: `async def bot_loop(bot_id: int, exchange_api):`
+                    # Yes, it instantiates managers internally. Perfect.
+
+                    task = asyncio.create_task(bot_loop(bot.id, exchange))
+                    active_bots[bot.id] = {"task": task, "exchange": exchange}
+                    logger.info(f"Resumed Bot {bot.id}")
+
+                except Exception as e:
+                    logger.error(f"Failed to resume Bot {bot.id}: {e}")
+                    # Update status to STOPPED?
+                    await repo.update_status(bot.id, "STOPPED")
+
     yield
     # Cleanup active bots
     for b_id, bot_data in active_bots.items():
@@ -220,6 +252,8 @@ async def start_bot(config: BotCreate, background_tasks: BackgroundTasks):
             "amount_per_grid": config.amount / config.grid_count,
             "risk_level": config.risk_level,
             "mode": config.mode,
+            "api_key": config.api_key,
+            "secret_key": config.secret_key,
         }
         bot = await repo.create_bot(config.user_id, config.pair, grid_config)
         await repo.update_status(bot.id, "RUNNING")

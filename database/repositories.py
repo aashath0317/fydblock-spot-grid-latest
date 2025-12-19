@@ -14,6 +14,8 @@ class BotRepository:
         bot = Bot(
             user_id=user_id,
             pair=pair,
+            api_key=grid_config.get("api_key"),
+            secret_key=grid_config.get("secret_key"),
             upper_limit=grid_config["upper_limit"],
             lower_limit=grid_config["lower_limit"],
             grid_count=grid_config["grid_count"],
@@ -38,6 +40,10 @@ class BotRepository:
         if bot:
             bot.status = status
             await self.session.commit()
+
+    async def get_running_bots(self) -> List[Bot]:
+        result = await self.session.execute(select(Bot).filter(Bot.status == "RUNNING"))
+        return result.scalars().all()
 
     async def update_grid_config(self, bot_id: int, new_config: dict):
         bot = await self.get_bot(bot_id)
@@ -116,5 +122,14 @@ class TradeRepository:
             realized_pnl=trade_data.get("realized_pnl", 0.0),
         )
         self.session.add(trade)
+
+        # 4. Accounting: Update Virtual Balance
+        # We need to fetch the bot to update its balance
+        # Optimization: Could be done in one update query, but object update is clearer.
+        result = await self.session.execute(select(Bot).filter(Bot.id == bot_id))
+        bot = result.scalars().first()
+        if bot:
+            bot.current_balance += trade.realized_pnl
+
         await self.session.commit()
         return trade
