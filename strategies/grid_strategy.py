@@ -31,10 +31,6 @@ class GridStrategy:
 
             side = "SELL" if price > current_price else "BUY"
 
-            # Amount logic
-            # Buy Order: We need Quote (USDT). amount_per_grid is in USDT.
-            # Sell Order: We need Base (BTC). amount_per_grid is in USDT value, so divide by price to get Qty.
-
             if side == "BUY":
                 qty = bot.amount_per_grid / price
             else:

@@ -99,6 +99,13 @@ async def bot_loop(bot_id: int, exchange_api):
                 # C. Logic (Requires DB)
                 async with db.get_session() as session:
                     # Re-instantiate Repos/Managers for this UOW
+                    # CRITICAL FIX: Re-fetch bot to attach to this session (prevents DetachedInstanceError)
+                    bot_repo = BotRepository(session)
+                    bot = await bot_repo.get_bot(bot_id)
+                    if not bot:
+                        logger.warning(f"Bot {bot_id} not found in logic loop.")
+                        break
+
                     order_repo = OrderRepository(session)
                     trade_repo = TradeRepository(session)
                     loop_order_mgr = OrderManager(exchange_api, order_repo, trade_repo)
@@ -135,7 +142,7 @@ async def bot_loop(bot_id: int, exchange_api):
 
                             # c. Update Bot Config in DB
                             # We need to use the Repo attached to this session
-                            bot_repo = BotRepository(session)
+                            # bot_repo already exists in this scope
                             updated_bot = await bot_repo.update_grid_config(
                                 bot_id, new_params
                             )
