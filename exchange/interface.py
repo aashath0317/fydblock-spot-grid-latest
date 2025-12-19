@@ -52,6 +52,16 @@ class ExchangeInterface(ABC):
         pass
 
     @abstractmethod
+    def price_to_precision(self, symbol: str, price: float) -> float:
+        """Formats price according to exchange rules."""
+        pass
+
+    @abstractmethod
+    def amount_to_precision(self, symbol: str, amount: float) -> float:
+        """Formats amount according to exchange rules."""
+        pass
+
+    @abstractmethod
     async def close(self):
         """Closes the connection."""
         pass

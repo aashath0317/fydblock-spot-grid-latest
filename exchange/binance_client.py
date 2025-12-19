@@ -26,6 +26,7 @@ class BinanceClient(ExchangeInterface):
             )
             if self.testnet:
                 self.client.set_sandbox_mode(True)
+            await self.client.load_markets()
 
     async def get_ticker(self, symbol: str) -> Dict:
         await self._init_client()
@@ -142,6 +143,14 @@ class BinanceClient(ExchangeInterface):
         except Exception as e:
             logger.error(f"Error fetching balance for {asset}: {e}")
             return 0.0
+
+    def price_to_precision(self, symbol: str, price: float) -> str:
+        # Note: returns string for API submission, often safest
+        return self.client.price_to_precision(symbol, price)
+
+    def amount_to_precision(self, symbol: str, amount: float) -> str:
+        # Note: returns string for API submission
+        return self.client.amount_to_precision(symbol, amount)
 
     async def close(self):
         if self.client:

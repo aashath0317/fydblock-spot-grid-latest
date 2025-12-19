@@ -50,8 +50,12 @@ class GridStrategy:
                     "symbol": bot.pair,
                     "side": side,
                     "type": "LIMIT",
-                    "quantity": round(qty, 6),  # TODO: Precision from exchange info
-                    "price": round(price, 2),
+                    "quantity": float(
+                        self.order_manager.exchange.amount_to_precision(bot.pair, qty)
+                    ),
+                    "price": float(
+                        self.order_manager.exchange.price_to_precision(bot.pair, price)
+                    ),
                 }
             )
 
@@ -155,8 +159,14 @@ class GridStrategy:
                     "symbol": bot.pair,
                     "side": new_side,
                     "type": "LIMIT",
-                    "quantity": qty,
-                    "price": round(new_price, 2),
+                    "quantity": float(
+                        self.order_manager.exchange.amount_to_precision(bot.pair, qty)
+                    ),
+                    "price": float(
+                        self.order_manager.exchange.price_to_precision(
+                            bot.pair, new_price
+                        )
+                    ),
                 }
             )
 
