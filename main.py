@@ -11,7 +11,10 @@ from database.repositories import BotRepository, OrderRepository, TradeRepositor
 from execution.order_manager import OrderManager
 from execution.balance_manager import BalanceManager
 from exchange.factory import ExchangeFactory
+from execution.balance_manager import BalanceManager
+from exchange.factory import ExchangeFactory
 from strategies.auto_tuner import AutoTuner
+from strategies.grid_strategy import GridStrategy
 from utils.logger import setup_logger
 from utils.health import health_system
 
@@ -150,8 +153,14 @@ async def start_bot(config: BotCreate, background_tasks: BackgroundTasks):
     trade_repo = TradeRepository(session)
     order_manager = OrderManager(exchange, order_repo, trade_repo)
     auto_tuner = AutoTuner()
+    grid_strategy = GridStrategy(order_manager)
 
-    # 4. Start Loop
+    # 4. Initial Placement (Async)
+    # We need current price first
+    ticker = await exchange.get_ticker(config.pair)
+    await grid_strategy.place_initial_grid(bot, ticker["price"])
+
+    # 5. Start Loop
     task = asyncio.create_task(bot_loop(bot.id, exchange, order_manager, auto_tuner))
     active_bots[bot.id] = {"task": task, "exchange": exchange}
 
