@@ -6,8 +6,7 @@ BASE_DIR = Path(__file__).resolve().parent
 
 # Database Config
 DB_NAME = "grid_bot.db"
-DB_PATH = BASE_DIR / "database" / DB_NAME
-DB_URL = f"sqlite:///{DB_PATH}"
+DB_URL = os.getenv("DB_URL", "sqlite+aiosqlite:///grid_bot.db")
 
 # Order Management
 # CRITICAL: Strict prefix to identify bot orders vs manual orders

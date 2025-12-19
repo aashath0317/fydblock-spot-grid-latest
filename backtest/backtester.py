@@ -17,6 +17,7 @@ class BacktestEngine:
         self.asset_balance = 0.0
         self.orders = []  # List of active dicts: {'price', 'side', 'qty'}
         self.trades_history = []
+        self.grid_step = 0.0
 
     def setup_grid(
         self,
@@ -36,11 +37,18 @@ class BacktestEngine:
         for price in levels:
             if price > current_price:
                 # Sell Order
-                # Need assets to place sell order? In backtest, we assume we might have them or start fresh.
-                # If starting fresh with USDT, we can't place sells yet unless we buy first.
-                # Simplification: Allow "short" or assume mixed startup.
-                # Strict: Only place Buys first.
-                pass
+                # Amount per grid (in USDT) / Current Price = Quantity (Base)
+                qty = amount_per_grid / current_price
+
+                self.orders.append({"side": "SELL", "price": price, "qty": qty})
+
+                # Simulate "Rebalancing" (Market Buy) to fund this sell
+                # Cost = qty * current_price (approx)
+                cost = qty * current_price
+                fee = cost * self.taker_fee  # Market buy fee
+
+                self.balance -= cost + fee
+                self.asset_balance += qty
             elif price < current_price:
                 self.orders.append(
                     {"side": "BUY", "price": price, "qty": amount_per_grid / price}
@@ -116,6 +124,9 @@ class BacktestEngine:
 
     def _get_counter_order(self, filled_order):
         step = self.grid_step
+        if step <= 0:
+            raise ValueError("Grid step is not initialized or invalid.")
+
         if filled_order["side"] == "BUY":
             # Buy Filled -> Place Sell High
             return {

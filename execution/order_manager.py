@@ -37,7 +37,7 @@ class OrderManager:
 
             try:
                 # 2. Add to DB
-                self.order_repo.create_order(bot_id, db_order)
+                await self.order_repo.create_order(bot_id, db_order)
 
                 # 3. Send to Exchange (ASYNC)
                 response = await self.exchange.create_order(
@@ -50,7 +50,7 @@ class OrderManager:
                 )
 
                 # 4. Update Exchange ID
-                self.order_repo.update_status(
+                await self.order_repo.update_status(
                     client_id, "OPEN", exchange_id=str(response["id"])
                 )
                 logger.info(
@@ -59,10 +59,10 @@ class OrderManager:
 
             except Exception as e:
                 logger.error(f"Bot {bot_id}: Failed to place order: {e}")
-                self.order_repo.update_status(client_id, "FAILED")
+                await self.order_repo.update_status(client_id, "FAILED")
 
     async def cancel_bot_orders(self, bot_id: int):
-        open_orders = self.order_repo.get_open_orders(bot_id)
+        open_orders = await self.order_repo.get_open_orders(bot_id)
 
         for order in open_orders:
             try:
@@ -70,7 +70,9 @@ class OrderManager:
                     order.symbol, order.exchange_order_id
                 )
                 if success:
-                    self.order_repo.update_status(order.client_order_id, "CANCELED")
+                    await self.order_repo.update_status(
+                        order.client_order_id, "CANCELED"
+                    )
             except Exception as e:
                 logger.error(
                     f"Bot {bot_id}: Failed to cancel order {order.exchange_order_id}: {e}"
@@ -83,7 +85,7 @@ class OrderManager:
         Returns a list of orders that were confirmed FILLED in this sync.
         """
         filled_orders = []
-        db_open_orders = self.order_repo.get_open_orders(bot_id)
+        db_open_orders = await self.order_repo.get_open_orders(bot_id)
         if not db_open_orders:
             return filled_orders
 
@@ -118,7 +120,6 @@ class OrderManager:
                         "id": db_order.id,
                     }
                 )
-
         return filled_orders
 
     async def _handle_vanished_order(self, bot_id: int, db_order) -> bool:
@@ -133,8 +134,8 @@ class OrderManager:
             )
 
             if order_info["status"] == "closed":
-                self.order_repo.update_status(db_order.client_order_id, "FILLED")
-                self.trade_repo.log_trade(
+                await self.order_repo.update_status(db_order.client_order_id, "FILLED")
+                await self.trade_repo.log_trade(
                     bot_id,
                     {
                         "order_id": db_order.id,
@@ -151,7 +152,9 @@ class OrderManager:
                 return True
 
             elif order_info["status"] == "canceled":
-                self.order_repo.update_status(db_order.client_order_id, "CANCELED")
+                await self.order_repo.update_status(
+                    db_order.client_order_id, "CANCELED"
+                )
                 logger.info(
                     f"Bot {bot_id}: Order {db_order.client_order_id} was CANCELED."
                 )

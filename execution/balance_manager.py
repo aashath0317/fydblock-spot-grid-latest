@@ -10,11 +10,11 @@ class BalanceManager:
         self.bot_repo = bot_repo
         self.exchange = exchange
 
-    def get_bot_equity(self, bot_id: int, current_price: float) -> float:
+    async def get_bot_equity(self, bot_id: int, current_price: float) -> float:
         """
         Calculates the total equity (Quote + Base converted to Quote) held by the bot.
         """
-        bot = self.bot_repo.get_bot(bot_id)
+        bot = await self.bot_repo.get_bot(bot_id)
         if not bot:
             return 0.0
         return bot.current_balance
@@ -27,7 +27,7 @@ class BalanceManager:
         Async because it calls exchange.get_balance.
         """
         # Fetch bot to get dynamic pair
-        bot = self.bot_repo.get_bot(bot_id)
+        bot = await self.bot_repo.get_bot(bot_id)
         if not bot:
             logger.error(f"Bot {bot_id} not found during fund check.")
             return False
@@ -50,14 +50,22 @@ class BalanceManager:
             return False
 
         # 2. Virtual/Isolation Check
+        # Ensure the bot isn't trying to use more than its total allocated equity.
+        # This prevents a small bot from draining the wallet for a huge order.
+        if required_amount > bot.current_balance:
+            logger.warning(
+                f"Bot {bot_id}: Virtual Balance Exceeded. Need {required_amount}, Alloc {bot.current_balance}"
+            )
+            return False
+
         return True
 
-    def allocate_initial_investment(self, bot_id: int, investment_amount: float):
+    async def allocate_initial_investment(self, bot_id: int, investment_amount: float):
         """
         Called on start. Records the investment.
         """
-        bot = self.bot_repo.get_bot(bot_id)
+        bot = await self.bot_repo.get_bot(bot_id)
         if bot:
             bot.investment_amount = investment_amount
             bot.current_balance = investment_amount
-            self.bot_repo.session.commit()
+            await self.bot_repo.session.commit()
