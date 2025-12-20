@@ -34,6 +34,7 @@ class Bot(Base):
     upper_limit = Column(Float, nullable=False)
     grid_count = Column(Integer, nullable=False)
     amount_per_grid = Column(Float, nullable=False)
+    quantity_type = Column(String, default="QUOTE")  # QUOTE, BASE
 
     # Auto Mode Settings
     risk_level = Column(Integer, nullable=True)  # Percentage, e.g. 10 for +/- 10%
@@ -42,6 +43,7 @@ class Bot(Base):
     # Risk Management
     stop_loss = Column(Float, nullable=True)
     take_profit = Column(Float, nullable=True)
+    current_balance = Column(Float, default=0.0)
 
     orders = relationship("Order", back_populates="bot")
     trades = relationship("Trade", back_populates="bot")

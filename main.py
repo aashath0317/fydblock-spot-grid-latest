@@ -28,6 +28,7 @@ class BotCreate(BaseModel):
     lower_limit: float
     upper_limit: float
     grid_count: int
+    quantity_type: Literal["QUOTE", "BASE"] = "QUOTE"
     mode: Literal["AUTO", "MANUAL"] = "MANUAL"
     risk_level: Optional[int] = None
     stop_loss: Optional[float] = None
@@ -109,7 +110,7 @@ async def bot_loop(bot_id: int, exchange_api):
                     order_repo = OrderRepository(session)
                     trade_repo = TradeRepository(session)
                     loop_order_mgr = OrderManager(exchange_api, order_repo, trade_repo)
-                    loop_strat = GridStrategy(loop_order_mgr)
+                    loop_strat = GridStrategy(loop_order_mgr, bot_repo)
                     # Need auto_tuner?
                     loop_tuner = AutoTuner()
 
@@ -269,7 +270,7 @@ async def start_bot(config: BotCreate, background_tasks: BackgroundTasks):
         order_repo = OrderRepository(session)
         trade_repo = TradeRepository(session)
         order_manager = OrderManager(exchange, order_repo, trade_repo)
-        grid_strategy = GridStrategy(order_manager)
+        grid_strategy = GridStrategy(order_manager, repo)
 
         # 4. Initial Placement (Async)
         # We need current price first
