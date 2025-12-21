@@ -1,4 +1,3 @@
-
 # Fydblock Spot Grid Trading Bot 🚀
 
 A high-performance, asynchronous cryptocurrency trading bot specializing in **Spot Grid Trading**. Built with Python, FastAPI, and CCXT, it is designed for resilience, security, and automated grid management.
@@ -7,28 +6,28 @@ A high-performance, asynchronous cryptocurrency trading bot specializing in **Sp
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.95%2B-green)
 ![License](https://img.shields.io/badge/License-MIT-purple)
 
-# 🌟 Key Features
+## 🌟 Key Features
 
-**⚡ Asynchronous Core**: Powered by `asyncio` and `FastAPI` for non-blocking I/O, allowing the bot to handle real-time WebSocket feeds for prices and order updates simultaneously.
-**🛡️ Resilient Order Management**:
+* **⚡ Asynchronous Core**: Powered by `asyncio` and `FastAPI` for non-blocking I/O, allowing the bot to handle real-time WebSocket feeds for prices and order updates simultaneously.
+* **🛡️ Resilient Order Management**:
     * **State Reconciliation**: Automatically detects and handles "vanished" orders (orders filled or canceled on the exchange but missed by the WebSocket) via `OrderManager.sync_orders`.
     * **Strict Isolation**: Prevents "phantom orders" by ensuring database state matches exchange state before placing new trades.
-**🔒 Enterprise-Grade Security**:
+* **🔒 Enterprise-Grade Security**:
     * **AES Encryption**: API keys and secrets are encrypted at rest using `Fernet` (symmetric encryption) before being stored in the database.
     * **Environment Isolation**: Critical secrets (Encryption Keys, DB URLs) are managed via `.env` files.
-**🤖 Smart Auto-Tuner**:
+* **🤖 Smart Auto-Tuner**:
     * **Reset Up**: Automatically resets the grid upwards if the price breaks the upper limit.
     * **Expand Down**: Intelligently lowers the bottom limit during market dips (with cooldowns) to catch lower prices without over-committing.
-**📊 Built-in Backtesting**: Includes a simulation engine to verify strategy logic against historical CSV data or dummy sine-wave data.
+* **📊 Built-in Backtesting**: Includes a simulation engine to verify strategy logic against historical CSV data or dummy sine-wave data.
 
 ---
 
 ## 🛠️ Technology Stack
 
-**Framework**: FastAPI, Uvicorn
-**Database**: SQLite (Async/WAL mode) with SQLAlchemy
-**Exchange Integration**: CCXT Pro (WebSockets + REST)
-**Data Validation**: Pydantic
+* **Framework**: FastAPI, Uvicorn
+* **Database**: SQLite (Async/WAL mode) with SQLAlchemy
+* **Exchange Integration**: CCXT Pro (WebSockets + REST)
+* **Data Validation**: Pydantic
 
 ---
 
