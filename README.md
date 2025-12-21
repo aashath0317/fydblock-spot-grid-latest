@@ -172,10 +172,6 @@ python verify_backtest.py
 
 ```
 
-## ⚠️ Disclaimer
-
-This software is for educational and experimental purposes. Cryptocurrency trading involves high risk. The authors are not responsible for any financial losses incurred while using this bot. Use at your own risk.
-
 ## 📄 License
 
 Distributed under the MIT License. See `LICENSE` for more information.
