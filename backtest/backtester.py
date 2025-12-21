@@ -1,5 +1,4 @@
 import pandas as pd
-from typing import List, Dict
 from decimal import Decimal
 from strategies.grid_math import calculate_grid_levels
 
@@ -10,10 +9,12 @@ class BacktestEngine:
         initial_balance: Decimal = Decimal("1000.0"),
         maker_fee: Decimal = Decimal("0.001"),
         taker_fee: Decimal = Decimal("0.001"),
+        participation_rate: Decimal = Decimal("0.1"),  # 10% of volume
     ):
         self.initial_balance = initial_balance
         self.maker_fee = maker_fee
         self.taker_fee = taker_fee
+        self.participation_rate = participation_rate
         self.balance = initial_balance
         self.asset_balance = Decimal("0.0")
         self.orders = []  # List of active dicts: {'price', 'side', 'qty'}
@@ -70,6 +71,9 @@ class BacktestEngine:
         # Convert pandas/numpy flows to string then Decimal to avoid precision loss
         high = Decimal(str(row["high"]))
         low = Decimal(str(row["low"]))
+        # Volume handling (default to infinite if missing)
+        volume = Decimal(str(row.get("volume", "1000000000")))
+        max_fill_avail = volume * self.participation_rate
 
         # Check Fills
         filled_indices = []
@@ -77,44 +81,65 @@ class BacktestEngine:
 
         for i, order in enumerate(self.orders):
             executed = False
+
+            # Check Price Conditions
             if order["side"] == "BUY" and low <= order["price"]:
-                # Buy Filled
-                cost = order["price"] * order["qty"]
-                fee = cost * self.maker_fee
-                self.balance -= cost + fee
-                self.asset_balance += order["qty"]
                 executed = True
-
-                # Place Sell Grid above
-                counter_order = self._get_counter_order(order)
-                if counter_order:
-                    new_orders.append(counter_order)
-
             elif order["side"] == "SELL" and high >= order["price"]:
-                # Sell Filled
-                revenue = order["price"] * order["qty"]
-                fee = revenue * self.maker_fee
-                self.balance += revenue - fee
-                self.asset_balance -= order["qty"]
                 executed = True
-
-                # Place Buy Grid below
-                counter_order = self._get_counter_order(order)
-                if counter_order:
-                    new_orders.append(counter_order)
 
             if executed:
-                filled_indices.append(i)
+                # VOLUME CHECK
+                # How much can we really fill?
+                fill_qty = min(order["qty"], max_fill_avail)
+
+                # Check for Partial
+                is_partial = fill_qty < order["qty"]
+
+                if order["side"] == "BUY":
+                    cost = order["price"] * fill_qty
+                    fee = cost * self.maker_fee
+                    self.balance -= cost + fee
+                    self.asset_balance += fill_qty
+                else:  # SELL
+                    revenue = order["price"] * fill_qty
+                    fee = revenue * self.maker_fee
+                    self.balance += revenue - fee
+                    self.asset_balance -= fill_qty
+
                 self.trades_history.append(
                     {
                         "timestamp": row["timestamp"],
                         "side": order["side"],
                         "price": order["price"],
-                        "qty": order["qty"],
+                        "qty": fill_qty,
+                        "type": "partial" if is_partial else "fill",
                         "balance": self.balance
                         + (self.asset_balance * Decimal(str(row["close"]))),
                     }
                 )
+
+                # Counter Order (For the filled amount only)
+                # We need to create a counter-order for 'fill_qty'
+                # Note: _get_counter_order takes 'filled_order' dict.
+                # We construct a temporary one.
+                temp_filled = {
+                    "side": order["side"],
+                    "price": order["price"],
+                    "qty": fill_qty,
+                }
+                counter_order = self._get_counter_order(temp_filled)
+                if counter_order:
+                    new_orders.append(counter_order)
+
+                # Update Original Order
+                if is_partial:
+                    # Update quantity in place
+                    self.orders[i]["qty"] -= fill_qty
+                    # Do NOT add to filled_indices
+                else:
+                    # Full fill
+                    filled_indices.append(i)
 
         # Remove filled
         for i in sorted(filled_indices, reverse=True):
