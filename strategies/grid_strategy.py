@@ -35,31 +35,18 @@ class GridStrategy:
             if abs(price - current_price) / current_price < Decimal("0.001"):
                 continue
 
+            # Standardize Base Asset Quantity (Support Shifting)
+            # 1. Determine Base Qty per Grid
+            if bot.quantity_type == "BASE":
+                base_qty = bot.amount_per_grid
+            else:  # QUOTE
+                # Use Current Price as reference for "Value"
+                # This locks in static base volume for the grid duration
+                base_qty = bot.amount_per_grid / current_price
+
+            needed_base_asset += base_qty
+
             side = "SELL" if price > current_price else "BUY"
-
-            if side == "BUY":
-                if bot.quantity_type == "BASE":
-                    # Buy X amount of base. Cost = X * Price.
-                    qty = bot.amount_per_grid
-                else:  # QUOTE
-                    qty = bot.amount_per_grid / price
-            else:
-                # SELL side
-                if bot.quantity_type == "BASE":
-                    qty = bot.amount_per_grid
-                else:
-                    # Original logic was amount_per_grid / current_price?
-                    # No, if we want fixed Quote value, we sell whatever equals that Value?
-                    # "Fixed Quote" usually means "Invest 10 USDT per grid".
-                    # So if Price is 100, we buy 0.1. If we sell at 100, we sell 0.1.
-                    # If we sell at 110? We sell X such that X * 110 = 10? No, usually Grid holds fixed Base for Sells?
-                    # Let's stick to standard behavior:
-                    # If QUOTE mode: Qty = Value / Price.
-                    qty = bot.amount_per_grid / (
-                        price if side == "BUY" else current_price
-                    )
-
-                needed_base_asset += qty
 
             orders_to_place.append(
                 {
@@ -67,7 +54,7 @@ class GridStrategy:
                     "side": side,
                     "type": "LIMIT",
                     "quantity": self.order_manager.exchange.amount_to_precision(
-                        bot.pair, qty
+                        bot.pair, base_qty
                     ),
                     "price": self.order_manager.exchange.price_to_precision(
                         bot.pair, price
@@ -320,15 +307,15 @@ class GridStrategy:
         # 2. (Deferred) Update Limits in DB
         # moved to end
 
-        # 3. Buy Replenishment
-        # We sold X at Top. We need X to place new Top Sell.
-        # We have USDT from the sale.
-        qty_needed = filled_order["quantity"]
-        logger.info(
-            f"Bot {bot.id}: Replenishing {qty_needed} {bot.pair} via MARKET BUY."
-        )
-
+        # 3. Buy Replenishment & 4. Place New Top Sell
         try:
+            # We sold X at Top. We need X to place new Top Sell.
+            # We have USDT from the sale.
+            qty_needed = filled_order["quantity"]
+            logger.info(
+                f"Bot {bot.id}: Replenishing {qty_needed} {bot.pair} via MARKET BUY."
+            )
+
             # Safe Replenishment (Limit Buy)
             ticker = await self.order_manager.exchange.get_ticker(bot.pair)
             current_price = ticker["price"]
@@ -349,32 +336,57 @@ class GridStrategy:
                 price=limit_price_str,
                 client_order_id=None,
             )
-            # Log trade? OrderManager usually handles this if we go through it.
-            # But here we went direct to exchange. Ideally, create a DB order for tracking?
-            # For simplicity in V1, we skip DB tracking for rebalance/replenish market orders,
-            # OR we should implement it properly.
-            # Let's just log it.
+
+            # 4. Place New Top Sell
+            # At new_upper
+            new_top_order = {
+                "symbol": bot.pair,
+                "side": "SELL",
+                "type": "LIMIT",
+                "quantity": self.order_manager.exchange.amount_to_precision(
+                    bot.pair, qty_needed
+                ),
+                "price": self.order_manager.exchange.price_to_precision(
+                    bot.pair, new_upper
+                ),
+            }
+
+            logger.info(f"Bot {bot.id}: Placing new TOP SELL @ {new_upper}")
+            await self.order_manager.place_orders(bot.id, [new_top_order])
+
         except Exception as e:
-            logger.error(f"Bot {bot.id}: Replenishment Failed: {e}")
-            # Vital failure?
+            logger.error(
+                f"Bot {bot.id}: Shift Transaction Failed: {e}. Attempting ROLLBACK."
+            )
 
-        # 4. Place New Top Sell
-        # At new_upper
+            # ROLLBACK: Re-create the canceled bottom buy
+            # lowest_buy object still holds data
+            try:
+                rollback_order = {
+                    "symbol": bot.pair,
+                    "side": "BUY",
+                    "type": "LIMIT",
+                    "quantity": self.order_manager.exchange.amount_to_precision(
+                        bot.pair, lowest_buy.quantity
+                    ),
+                    "price": self.order_manager.exchange.price_to_precision(
+                        bot.pair, lowest_buy.price
+                    ),
+                }
+                logger.info(
+                    f"Bot {bot.id}: ROLLBACK - Re-placing Bottom Buy @ {lowest_buy.price}"
+                )
+                await self.order_manager.place_orders(bot.id, [rollback_order])
+                # We do NOT update limits. We return to previous state.
+                logger.info(
+                    f"Bot {bot.id}: ROLLBACK SUCCESSFUL. Grid returned to safety."
+                )
+            except Exception as rollback_error:
+                logger.critical(
+                    f"Bot {bot.id}: ROLLBACK FAILED! Grid is compromised. Error: {rollback_error}"
+                )
 
-        new_top_order = {
-            "symbol": bot.pair,
-            "side": "SELL",
-            "type": "LIMIT",
-            "quantity": self.order_manager.exchange.amount_to_precision(
-                bot.pair, qty_needed
-            ),
-            "price": self.order_manager.exchange.price_to_precision(
-                bot.pair, new_upper
-            ),
-        }
-
-        logger.info(f"Bot {bot.id}: Placing new TOP SELL @ {new_upper}")
-        await self.order_manager.place_orders(bot.id, [new_top_order])
+            return  # Exit Shift
 
         # 5. COMMIT: Update Limits in DB
         # Only reached if exchange ops succeeded
