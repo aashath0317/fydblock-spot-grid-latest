@@ -1,4 +1,5 @@
 from typing import List, Optional
+import asyncio
 from decimal import Decimal
 from execution.order_manager import OrderManager
 from strategies.grid_math import calculate_grid_levels
@@ -118,8 +119,6 @@ class GridStrategy:
             logger.info(f"Bot {bot.id}: Rebalancing via LIMIT Buy @ {limit_price_str}")
 
             try:
-                import asyncio
-
                 order_response = await self.order_manager.exchange.create_order(
                     symbol=bot.pair,
                     side="BUY",
@@ -155,10 +154,20 @@ class GridStrategy:
                     else:
                         # Timeout
                         logger.error(
-                            f"Bot {bot.id}: Rebalance order {order_id} timed out (not filled in 10s)."
+                            f"Bot {bot.id}: Rebalance order {order_id} timed out (not filled in 10s). Canceling..."
                         )
+
+                        try:
+                            await self.order_manager.exchange.cancel_order(
+                                bot.pair, order_id
+                            )
+                        except Exception as cancel_error:
+                            logger.error(
+                                f"Bot {bot.id}: Failed to cancel timed-out rebalance order: {cancel_error}"
+                            )
+
                         # Proceed? Or Fail? If we proceed, we risk error. Fail is safer.
-                        raise Exception("Rebalance order timed out")
+                        raise Exception("Rebalance order timed out and was canceled.")
             except Exception as e:
                 logger.error(f"Bot {bot.id}: Rebalance Market Buy Failed: {e}")
                 raise  # Stop startup if we can't buy assets
