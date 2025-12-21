@@ -33,6 +33,7 @@ class Bot(Base):
     grid_count = Column(Integer, nullable=False)
     amount_per_grid = Column(Numeric(20, 8), nullable=False)
     quantity_type = Column(String, default="QUOTE")  # QUOTE, BASE
+    grid_type = Column(String, default="ARITHMETIC")  # ARITHMETIC, GEOMETRIC
 
     # Auto Mode Settings
     risk_level = Column(Integer, nullable=True)  # Percentage, e.g. 10 for +/- 10%

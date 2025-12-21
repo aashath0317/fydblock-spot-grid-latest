@@ -24,7 +24,12 @@ class GridStrategy:
         logger.info(f"Bot {bot.id}: Calculating initial grid...")
 
         # 1. Calc Levels
-        levels = calculate_grid_levels(bot.lower_limit, bot.upper_limit, bot.grid_count)
+        levels = calculate_grid_levels(
+            bot.lower_limit,
+            bot.upper_limit,
+            bot.grid_count,
+            getattr(bot, "grid_type", "ARITHMETIC"),
+        )
 
         orders_to_place = []
         needed_base_asset = Decimal("0")
@@ -169,7 +174,16 @@ class GridStrategy:
             return
 
         # Calculate Grid Step
-        step = (bot.upper_limit - bot.lower_limit) / bot.grid_count
+        # Calculate Grid Step or Ratio
+        grid_type = getattr(bot, "grid_type", "ARITHMETIC")
+
+        if grid_type == "GEOMETRIC":
+            # ratio = (Upper / Lower)^(1/(N-1))
+            ratio = (bot.upper_limit / bot.lower_limit) ** (
+                Decimal("1") / (bot.grid_count - 1)
+            )
+        else:
+            step = (bot.upper_limit - bot.lower_limit) / bot.grid_count
 
         orders_to_place = []
 
@@ -181,8 +195,20 @@ class GridStrategy:
                 bot.upper_limit * Decimal("0.999")
             ):
                 if self.bot_repo:
+                    # SHIFT LOGIC (Does it need to handle Geometric? For V1 assuming Arithmetic Shift Logic or generic step?)
+                    # Shift logic relies on "Step". For Geometric, "Step" changes.
+                    # Geometric shifting is complex (requires scaling limits by Ratio).
+                    # For now, we will calculate "Local Step" for the shift function if needed,
+                    # OR we just pass the Ratio and update Shift logic?
+                    # Simplest V1: Use current local step at Top.
+                    # shift_step = upper_limit * (ratio - 1)
+                    if grid_type == "GEOMETRIC":
+                        shift_step = bot.upper_limit * (ratio - Decimal("1"))
+                    else:
+                        shift_step = step
+
                     logger.info(f"Bot {bot.id}: Top Sell Hit! Shifting Grid Up.")
-                    await self._shift_grid_up(bot, step, filled)
+                    await self._shift_grid_up(bot, shift_step, filled)
                     continue
                 else:
                     logger.warning(
@@ -191,28 +217,42 @@ class GridStrategy:
 
             # Logic:
             # Snap to grid index to prevent drift.
-            # Index = Round((Price - Lower) / Step)
-            # New Price = Lower + Step * (Index +/- 1)
 
-            # 1. Calculate Index of Filled Order
-            # We use ROUND_HALF_UP logic via Decimal quantize if needed, or simple round() check
-            # Since step is Decimal, we can divide.
+            if grid_type == "GEOMETRIC":
+                # Index = ln(Price / Lower) / ln(Ratio)
+                distance_ratio = filled["price"] / bot.lower_limit
+                exact_index = distance_ratio.ln() / ratio.ln()
+                grid_index = int(
+                    exact_index.to_integral_value(rounding="ROUND_HALF_UP")
+                )
 
-            distance = filled["price"] - bot.lower_limit
-            exact_index = distance / step
-            # Round to nearest integer index
-            grid_index = int(exact_index.to_integral_value(rounding="ROUND_HALF_UP"))
+                if filled["side"] == "BUY":
+                    new_side = "SELL"
+                    new_index = grid_index + 1
+                else:
+                    new_side = "BUY"
+                    new_index = grid_index - 1
 
-            if filled["side"] == "BUY":
-                # Bought at Index i (Low). Sell at Index i+1 (High).
-                new_side = "SELL"
-                new_index = grid_index + 1
-            else:
-                # Sold at Index i (High). Buy at Index i-1 (Low).
-                new_side = "BUY"
-                new_index = grid_index - 1
+                new_price = bot.lower_limit * (ratio**new_index)
 
-            new_price = bot.lower_limit + (step * new_index)
+            else:  # ARITHMETIC
+                distance = filled["price"] - bot.lower_limit
+                exact_index = distance / step
+                # Round to nearest integer index
+                grid_index = int(
+                    exact_index.to_integral_value(rounding="ROUND_HALF_UP")
+                )
+
+                if filled["side"] == "BUY":
+                    # Bought at Index i (Low). Sell at Index i+1 (High).
+                    new_side = "SELL"
+                    new_index = grid_index + 1
+                else:
+                    # Sold at Index i (High). Buy at Index i-1 (Low).
+                    new_side = "BUY"
+                    new_index = grid_index - 1
+
+                new_price = bot.lower_limit + (step * new_index)
 
             # Validation
             if new_price > (bot.upper_limit * Decimal("1.001")) or new_price < (
