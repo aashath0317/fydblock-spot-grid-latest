@@ -1,4 +1,5 @@
-from typing import List, Dict, Optional
+from typing import List, Optional
+from decimal import Decimal
 from execution.order_manager import OrderManager
 from strategies.grid_math import calculate_grid_levels
 from database.models import Bot
@@ -15,7 +16,7 @@ class GridStrategy:
         self.order_manager = order_manager
         self.bot_repo = bot_repo
 
-    async def place_initial_grid(self, bot: Bot, current_price: float):
+    async def place_initial_grid(self, bot: Bot, current_price: Decimal):
         """
         Calculates grid levels, rebalances portfolio, and places OPEN orders.
         """
@@ -25,12 +26,12 @@ class GridStrategy:
         levels = calculate_grid_levels(bot.lower_limit, bot.upper_limit, bot.grid_count)
 
         orders_to_place = []
-        needed_base_asset = 0.0
+        needed_base_asset = Decimal("0")
 
         # 2. Plan Orders
         for price in levels:
             # Skip levels too close to current price (spread protection)
-            if abs(price - current_price) / current_price < 0.001:
+            if abs(price - current_price) / current_price < Decimal("0.001"):
                 continue
 
             side = "SELL" if price > current_price else "BUY"
@@ -64,11 +65,11 @@ class GridStrategy:
                     "symbol": bot.pair,
                     "side": side,
                     "type": "LIMIT",
-                    "quantity": float(
-                        self.order_manager.exchange.amount_to_precision(bot.pair, qty)
+                    "quantity": self.order_manager.exchange.amount_to_precision(
+                        bot.pair, qty
                     ),
-                    "price": float(
-                        self.order_manager.exchange.price_to_precision(bot.pair, price)
+                    "price": self.order_manager.exchange.price_to_precision(
+                        bot.pair, price
                     ),
                 }
             )
@@ -79,7 +80,7 @@ class GridStrategy:
         logger.info(f"Bot {bot.id}: Placing {len(orders_to_place)} initial orders.")
         await self.order_manager.place_orders(bot.id, orders_to_place)
 
-    async def _ensure_base_balance(self, bot: Bot, required_qty: float):
+    async def _ensure_base_balance(self, bot: Bot, required_qty: Decimal):
         """
         Checks if we have enough Coin (Base Asset). If not, Market Buy.
         """
@@ -100,15 +101,30 @@ class GridStrategy:
                 f"Bot {bot.id}: Rebalancing... Market Buying {deficit} {base_asset}"
             )
 
+            # Limit Order with Buffer (Marketable Limit Implementation)
+            # Provides protection against infinite slippage.
+            ticker = await self.order_manager.exchange.get_ticker(bot.pair)
+            current_price = ticker["price"]
+            limit_price = current_price * Decimal("1.02")  # 2% Slippage tolerance
+
+            # Convert to precision string
+            limit_price_str = self.order_manager.exchange.price_to_precision(
+                bot.pair, limit_price
+            )
+            quantity_str = self.order_manager.exchange.amount_to_precision(
+                bot.pair, deficit
+            )
+
+            logger.info(f"Bot {bot.id}: Rebalancing via LIMIT Buy @ {limit_price_str}")
+
             try:
                 await self.order_manager.exchange.create_order(
                     symbol=bot.pair,
                     side="BUY",
-                    type="MARKET",
-                    quantity=deficit,
-                    price=None,
-                    client_order_id=None,  # Market buys don't need strict tracking in grid? Or we track them?
-                    # Better to track for PnL.
+                    type="LIMIT",
+                    quantity=quantity_str,
+                    price=limit_price_str,
+                    client_order_id=None,
                 )
                 # Wait for fill? Market orders are usually instant.
                 # ExchangeInterface async create_order returns dict with status using 'await', so it waits for API.
@@ -135,7 +151,7 @@ class GridStrategy:
             # Use epsilon for float comparison logic
             # If we sold at something >= Upper Limit (approx)
             if filled["side"] == "SELL" and filled["price"] >= (
-                bot.upper_limit * 0.999
+                bot.upper_limit * Decimal("0.999")
             ):
                 if self.bot_repo:
                     logger.info(f"Bot {bot.id}: Top Sell Hit! Shifting Grid Up.")
@@ -158,8 +174,8 @@ class GridStrategy:
                 new_price = filled["price"] - step
 
             # Validation
-            if new_price > (bot.upper_limit * 1.001) or new_price < (
-                bot.lower_limit * 0.999
+            if new_price > (bot.upper_limit * Decimal("1.001")) or new_price < (
+                bot.lower_limit * Decimal("0.999")
             ):
                 logger.warning(
                     f"Bot {bot.id}: Counter-order price {new_price} out of bounds [{bot.lower_limit}, {bot.upper_limit}]. Skipping."
@@ -174,13 +190,11 @@ class GridStrategy:
                     "symbol": bot.pair,
                     "side": new_side,
                     "type": "LIMIT",
-                    "quantity": float(
-                        self.order_manager.exchange.amount_to_precision(bot.pair, qty)
+                    "quantity": self.order_manager.exchange.amount_to_precision(
+                        bot.pair, qty
                     ),
-                    "price": float(
-                        self.order_manager.exchange.price_to_precision(
-                            bot.pair, new_price
-                        )
+                    "price": self.order_manager.exchange.price_to_precision(
+                        bot.pair, new_price
                     ),
                 }
             )
@@ -189,7 +203,7 @@ class GridStrategy:
             logger.info(f"Bot {bot.id}: Placing {len(orders_to_place)} counter-orders.")
             await self.order_manager.place_orders(bot.id, orders_to_place)
 
-    async def _shift_grid_up(self, bot: Bot, step: float, filled_order: dict):
+    async def _shift_grid_up(self, bot: Bot, step: Decimal, filled_order: dict):
         """
         Shifts the grid up by one 'step'.
         1. Cancel Bottom Buy.
@@ -206,27 +220,36 @@ class GridStrategy:
         open_orders = await self.order_manager.order_repo.get_open_orders(bot.id)
         # Assuming list of Order objects
         found_bottom = False
-        import math
+        # Assuming list of Order objects
+        found_bottom = False
 
-        for order in open_orders:
-            if order.side == "BUY" and math.isclose(
-                order.price, old_lower, rel_tol=0.001
-            ):
+        if open_orders:
+            # Filter for Buy Orders
+            buy_orders = [o for o in open_orders if o.side == "BUY"]
+
+            if buy_orders:
+                # Identify the bottom order by lowest price
+                lowest_buy = min(buy_orders, key=lambda o: o.price)
+
+                # Check if reasonable? It should be near old_lower.
+                # But trusting min() is robust for Shift Up.
                 logger.info(
-                    f"Bot {bot.id}: Cancelling bottom order {order.client_order_id} @ {order.price}"
+                    f"Bot {bot.id}: Cancelling bottom order {lowest_buy.client_order_id} @ {lowest_buy.price}"
                 )
-                # Cancel via exchange
                 try:
                     await self.order_manager.exchange.cancel_order(
-                        bot.pair, order.exchange_order_id
+                        bot.pair, lowest_buy.exchange_order_id
                     )
                     await self.order_manager.order_repo.update_status(
-                        order.client_order_id, "CANCELED"
+                        lowest_buy.client_order_id, "CANCELED"
                     )
                     found_bottom = True
                 except Exception as e:
                     logger.error(f"Bot {bot.id}: Failed to cancel bottom order: {e}")
-                break
+            else:
+                logger.warning(
+                    f"Bot {bot.id}: No BUY orders found to cancel for shift."
+                )
 
         if not found_bottom:
             logger.warning(
@@ -235,32 +258,8 @@ class GridStrategy:
             # Proceed anyway? If we don't cancel, we might have extra orders.
             # But we must shift limits.
 
-        # 2. Update Limits in DB
-        # We need to update the passed 'bot' object AND the DB
-        bot.lower_limit = new_lower
-        bot.upper_limit = new_upper
-        # bot is attached to session handled by main loop?
-        # main loop uses `async with db.get_session()`.
-        # `bot` was fetched there. Changes to `bot` should track.
-        # But we need to flush/commit.
-        # Since we don't control the session commit here without repo.
-        # `self.bot_repo` has access to session?
-        # `BotRepository` has `self.session`.
-        if self.bot_repo:
-            await self.bot_repo.session.flush()  # Or update explicitly
-            # Better: use repo method to update specific fields to ensure cleanliness?
-            # Or just `session.commit()`?
-            # Creating a dedicated update method is safer.
-            # But let's try direct commit if we trust session attachment.
-            await self.bot_repo.update_grid_config(
-                bot.id,
-                {
-                    "lower_limit": new_lower,
-                    "upper_limit": new_upper,
-                    # "grid_count": bot.grid_count # Unchanged
-                },
-            )
-            logger.info(f"Bot {bot.id}: Shifted limits to [{new_lower}, {new_upper}]")
+        # 2. (Deferred) Update Limits in DB
+        # moved to end
 
         # 3. Buy Replenishment
         # We sold X at Top. We need X to place new Top Sell.
@@ -271,13 +270,25 @@ class GridStrategy:
         )
 
         try:
+            # Safe Replenishment (Limit Buy)
+            ticker = await self.order_manager.exchange.get_ticker(bot.pair)
+            current_price = ticker["price"]
+            limit_price = current_price * Decimal("1.02")
+
+            limit_price_str = self.order_manager.exchange.price_to_precision(
+                bot.pair, limit_price
+            )
+            quantity_str = self.order_manager.exchange.amount_to_precision(
+                bot.pair, qty_needed
+            )
+
             await self.order_manager.exchange.create_order(
                 symbol=bot.pair,
                 side="BUY",
-                type="MARKET",
-                quantity=qty_needed,
-                price=None,
-                client_order_id=None,  # We can track it if we want logs, but Market usually fills instantly.
+                type="LIMIT",
+                quantity=quantity_str,
+                price=limit_price_str,
+                client_order_id=None,
             )
             # Log trade? OrderManager usually handles this if we go through it.
             # But here we went direct to exchange. Ideally, create a DB order for tracking?
@@ -295,13 +306,27 @@ class GridStrategy:
             "symbol": bot.pair,
             "side": "SELL",
             "type": "LIMIT",
-            "quantity": float(
-                self.order_manager.exchange.amount_to_precision(bot.pair, qty_needed)
+            "quantity": self.order_manager.exchange.amount_to_precision(
+                bot.pair, qty_needed
             ),
-            "price": float(
-                self.order_manager.exchange.price_to_precision(bot.pair, new_upper)
+            "price": self.order_manager.exchange.price_to_precision(
+                bot.pair, new_upper
             ),
         }
 
         logger.info(f"Bot {bot.id}: Placing new TOP SELL @ {new_upper}")
         await self.order_manager.place_orders(bot.id, [new_top_order])
+
+        # 5. COMMIT: Update Limits in DB
+        # Only reached if exchange ops succeeded
+        if self.bot_repo:
+            await self.bot_repo.update_grid_config(
+                bot.id,
+                {
+                    "lower_limit": new_lower,
+                    "upper_limit": new_upper,
+                },
+            )
+            logger.info(
+                f"Bot {bot.id}: Shifted limits locally and in DB to [{new_lower}, {new_upper}]"
+            )

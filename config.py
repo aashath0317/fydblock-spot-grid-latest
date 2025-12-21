@@ -1,12 +1,18 @@
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 # Base Directory
 BASE_DIR = Path(__file__).resolve().parent
+
+# Load Environment Variables
+load_dotenv(BASE_DIR / ".env")
 
 # Database Config
 DB_NAME = "grid_bot.db"
 DB_URL = os.getenv("DB_URL", "sqlite+aiosqlite:///grid_bot.db")
+ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
 
 # Order Management
 # CRITICAL: Strict prefix to identify bot orders vs manual orders

@@ -1,5 +1,6 @@
 import time
-from typing import List
+from typing import List, Optional
+from decimal import Decimal
 from database.repositories import OrderRepository, TradeRepository
 from exchange.interface import ExchangeInterface
 from config import ORDER_PREFIX
@@ -12,8 +13,8 @@ class OrderManager:
     def __init__(
         self,
         exchange: ExchangeInterface,
-        order_repo: OrderRepository,
-        trade_repo: TradeRepository,
+        order_repo: Optional[OrderRepository] = None,
+        trade_repo: Optional[TradeRepository] = None,
     ):
         self.exchange = exchange
         self.order_repo = order_repo
@@ -101,6 +102,45 @@ class OrderManager:
 
         for db_order in db_open_orders:
             if db_order.client_order_id in exchange_map:
+                # 1. Check for Partial Fill
+                exch_order = exchange_map[db_order.client_order_id]
+                # binance_client returns Decimals now
+                new_filled = exch_order["filled"]
+                old_filled = db_order.filled or Decimal("0")  # Safety if null
+                delta = new_filled - old_filled
+
+                if delta > 0:
+                    logger.info(
+                        f"Bot {bot_id}: Partial Fill detected {delta} for {db_order.client_order_id}"
+                    )
+                    # Update DB
+                    await self.order_repo.update_status(
+                        db_order.client_order_id, "OPEN", filled=new_filled
+                    )
+
+                    # Log Trade
+                    await self.trade_repo.log_trade(
+                        bot_id,
+                        {
+                            "order_id": db_order.id,
+                            "symbol": db_order.symbol,
+                            "side": db_order.side,
+                            "price": db_order.price,
+                            "quantity": delta,
+                            "realized_pnl": Decimal("0.0"),
+                        },
+                    )
+
+                    # Trigger Strategy for this chunk
+                    filled_orders.append(
+                        {
+                            "symbol": db_order.symbol,
+                            "side": db_order.side,
+                            "price": db_order.price,
+                            "quantity": delta,
+                            "id": db_order.id,
+                        }
+                    )
                 continue
 
             # Vanished
@@ -134,7 +174,9 @@ class OrderManager:
             )
 
             if order_info["status"] == "closed":
-                await self.order_repo.update_status(db_order.client_order_id, "FILLED")
+                await self.order_repo.update_status(
+                    db_order.client_order_id, "FILLED", filled=order_info["filled"]
+                )
                 await self.trade_repo.log_trade(
                     bot_id,
                     {
@@ -142,8 +184,9 @@ class OrderManager:
                         "symbol": db_order.symbol,
                         "side": db_order.side,
                         "price": db_order.price,
-                        "quantity": order_info["filled"],
-                        "realized_pnl": 0.0,
+                        "quantity": order_info["filled"]
+                        - (db_order.filled or Decimal("0")),
+                        "realized_pnl": Decimal("0.0"),
                     },
                 )
                 logger.info(

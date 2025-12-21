@@ -2,8 +2,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from .models import Bot, Order, Trade
 from typing import List, Optional
-from sqlalchemy import update
-import datetime
+from decimal import Decimal
+
+from utils.security import encrypt_value
 
 
 class BotRepository:
@@ -14,8 +15,8 @@ class BotRepository:
         bot = Bot(
             user_id=user_id,
             pair=pair,
-            api_key=grid_config.get("api_key"),
-            secret_key=grid_config.get("secret_key"),
+            api_key=encrypt_value(grid_config.get("api_key")),
+            secret_key=encrypt_value(grid_config.get("secret_key")),
             upper_limit=grid_config["upper_limit"],
             lower_limit=grid_config["lower_limit"],
             grid_count=grid_config["grid_count"],
@@ -90,7 +91,11 @@ class OrderRepository:
         return result.scalars().all()
 
     async def update_status(
-        self, client_order_id: str, status: str, exchange_id: str = None
+        self,
+        client_order_id: str,
+        status: str,
+        exchange_id: str = None,
+        filled: Decimal = None,
     ):
         result = await self.session.execute(
             select(Order).filter(Order.client_order_id == client_order_id)
@@ -101,6 +106,8 @@ class OrderRepository:
             order.status = status
             if exchange_id:
                 order.exchange_order_id = exchange_id
+            if filled is not None:
+                order.filled = filled
             await self.session.commit()
         return order
 

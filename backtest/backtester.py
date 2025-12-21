@@ -1,31 +1,32 @@
 import pandas as pd
 from typing import List, Dict
+from decimal import Decimal
 from strategies.grid_math import calculate_grid_levels
 
 
 class BacktestEngine:
     def __init__(
         self,
-        initial_balance: float = 1000.0,
-        maker_fee: float = 0.001,
-        taker_fee: float = 0.001,
+        initial_balance: Decimal = Decimal("1000.0"),
+        maker_fee: Decimal = Decimal("0.001"),
+        taker_fee: Decimal = Decimal("0.001"),
     ):
         self.initial_balance = initial_balance
         self.maker_fee = maker_fee
         self.taker_fee = taker_fee
         self.balance = initial_balance
-        self.asset_balance = 0.0
+        self.asset_balance = Decimal("0.0")
         self.orders = []  # List of active dicts: {'price', 'side', 'qty'}
         self.trades_history = []
-        self.grid_step = 0.0
+        self.grid_step = Decimal("0.0")
 
     def setup_grid(
         self,
-        current_price: float,
-        lower_limit: float,
-        upper_limit: float,
+        current_price: Decimal,
+        lower_limit: Decimal,
+        upper_limit: Decimal,
         grid_count: int,
-        amount_per_grid: float,
+        amount_per_grid: Decimal,
     ):
         self.orders = []
         self.lower_limit = lower_limit
@@ -66,8 +67,9 @@ class BacktestEngine:
         return self.generate_report()
 
     def process_candle(self, row):
-        high = row["high"]
-        low = row["low"]
+        # Convert pandas/numpy flows to string then Decimal to avoid precision loss
+        high = Decimal(str(row["high"]))
+        low = Decimal(str(row["low"]))
 
         # Check Fills
         filled_indices = []
@@ -109,7 +111,8 @@ class BacktestEngine:
                         "side": order["side"],
                         "price": order["price"],
                         "qty": order["qty"],
-                        "balance": self.balance + (self.asset_balance * row["close"]),
+                        "balance": self.balance
+                        + (self.asset_balance * Decimal(str(row["close"]))),
                     }
                 )
 

@@ -1,5 +1,6 @@
-import ccxt.pro as ccxt  # IMPORTING PRO
-from typing import Dict, List, Optional
+import ccxt.pro as ccxt
+from typing import Dict, List, Union, Optional
+from decimal import Decimal
 from .interface import ExchangeInterface
 import asyncio
 from utils.logger import setup_logger
@@ -33,7 +34,7 @@ class BinanceClient(ExchangeInterface):
         try:
             # Prefer REST for one-off if WS is not established, but Pro supports fetchTicker too
             ticker = await self.client.fetch_ticker(symbol)
-            return {"symbol": symbol, "price": ticker["last"]}
+            return {"symbol": symbol, "price": Decimal(str(ticker["last"]))}
         except Exception as e:
             logger.error(f"Error fetching ticker for {symbol}: {e}")
             raise
@@ -43,7 +44,7 @@ class BinanceClient(ExchangeInterface):
         try:
             # Watches for the next ticker update (Real-time)
             ticker = await self.client.watch_ticker(symbol)
-            return {"symbol": symbol, "price": float(ticker["last"])}
+            return {"symbol": symbol, "price": Decimal(str(ticker["last"]))}
         except Exception as e:
             logger.error(f"Error watching ticker for {symbol}: {e}")
             raise
@@ -53,8 +54,8 @@ class BinanceClient(ExchangeInterface):
         symbol: str,
         side: str,
         type: str,
-        quantity: float,
-        price: float = None,
+        quantity: Union[float, Decimal, str],
+        price: Union[float, Decimal, str] = None,
         client_order_id: str = None,
     ) -> Dict:
         await self._init_client()
@@ -67,16 +68,16 @@ class BinanceClient(ExchangeInterface):
                 symbol=symbol,
                 type=type,
                 side=side,
-                amount=quantity,
-                price=price,
+                amount=float(quantity) if isinstance(quantity, Decimal) else quantity,
+                price=float(price) if isinstance(price, Decimal) else price,
                 params=params,
             )
             return {
                 "id": str(order["id"]),
                 "client_order_id": order.get("clientOrderId"),
                 "status": order["status"],
-                "filled": float(order["filled"]),
-                "remaining": float(order["remaining"]),
+                "filled": Decimal(str(order["filled"])),
+                "remaining": Decimal(str(order["remaining"])),
             }
         except Exception as e:
             logger.error(f"Error placing order {side} {symbol}: {e}")
@@ -108,8 +109,8 @@ class BinanceClient(ExchangeInterface):
                 "id": str(order["id"]),
                 "client_order_id": order.get("clientOrderId"),
                 "status": order["status"],
-                "filled": float(order["filled"]),
-                "remaining": float(order["remaining"]),
+                "filled": Decimal(str(order["filled"])),
+                "remaining": Decimal(str(order["remaining"])),
             }
         except Exception as e:
             logger.error(f"Error fetching order {order_id}: {e}")
@@ -125,9 +126,9 @@ class BinanceClient(ExchangeInterface):
                     "id": str(o["id"]),
                     "client_order_id": o.get("clientOrderId"),
                     "status": o["status"],
-                    "price": float(o["price"]),
+                    "price": Decimal(str(o["price"])),
                     "side": o["side"],
-                    "quantity": float(o["amount"]),
+                    "quantity": Decimal(str(o["amount"])),
                 }
                 for o in orders
             ]
@@ -135,20 +136,20 @@ class BinanceClient(ExchangeInterface):
             logger.error(f"Error fetching open orders for {symbol}: {e}")
             return []
 
-    async def get_balance(self, asset: str) -> float:
+    async def get_balance(self, asset: str) -> Decimal:
         await self._init_client()
         try:
             balance = await self.client.fetch_balance()
-            return float(balance[asset]["free"])
+            return Decimal(str(balance[asset]["free"]))
         except Exception as e:
             logger.error(f"Error fetching balance for {asset}: {e}")
-            return 0.0
+            return Decimal("0.0")
 
-    def price_to_precision(self, symbol: str, price: float) -> str:
+    def price_to_precision(self, symbol: str, price: Union[float, Decimal]) -> str:
         # Note: returns string for API submission, often safest
         return self.client.price_to_precision(symbol, price)
 
-    def amount_to_precision(self, symbol: str, amount: float) -> str:
+    def amount_to_precision(self, symbol: str, amount: Union[float, Decimal]) -> str:
         # Note: returns string for API submission
         return self.client.amount_to_precision(symbol, amount)
 

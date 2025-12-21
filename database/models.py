@@ -2,11 +2,9 @@ from sqlalchemy import (
     Column,
     Integer,
     String,
-    Float,
-    Boolean,
+    Numeric,
     DateTime,
     ForeignKey,
-    Text,
 )
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.sql import func
@@ -30,10 +28,10 @@ class Bot(Base):
     mode = Column(String, default="MANUAL")  # AUTO, MANUAL
 
     # Grid Settings
-    lower_limit = Column(Float, nullable=False)
-    upper_limit = Column(Float, nullable=False)
+    lower_limit = Column(Numeric(20, 8), nullable=False)
+    upper_limit = Column(Numeric(20, 8), nullable=False)
     grid_count = Column(Integer, nullable=False)
-    amount_per_grid = Column(Float, nullable=False)
+    amount_per_grid = Column(Numeric(20, 8), nullable=False)
     quantity_type = Column(String, default="QUOTE")  # QUOTE, BASE
 
     # Auto Mode Settings
@@ -41,9 +39,9 @@ class Bot(Base):
     last_trailing_update = Column(DateTime, nullable=True)
 
     # Risk Management
-    stop_loss = Column(Float, nullable=True)
-    take_profit = Column(Float, nullable=True)
-    current_balance = Column(Float, default=0.0)
+    stop_loss = Column(Numeric(20, 8), nullable=True)
+    take_profit = Column(Numeric(20, 8), nullable=True)
+    current_balance = Column(Numeric(20, 8), default=0.0)
 
     orders = relationship("Order", back_populates="bot")
     trades = relationship("Trade", back_populates="bot")
@@ -68,8 +66,9 @@ class Order(Base):
     symbol = Column(String, nullable=False)
     side = Column(String, nullable=False)  # BUY, SELL
     type = Column(String, default="LIMIT")
-    price = Column(Float, nullable=False)
-    quantity = Column(Float, nullable=False)
+    price = Column(Numeric(20, 8), nullable=False)
+    quantity = Column(Numeric(20, 8), nullable=False)
+    filled = Column(Numeric(20, 8), default=0.0)
 
     # Status
     status = Column(String, default="OPEN")  # OPEN, FILLED, CANCELED, VANISHED
@@ -91,12 +90,12 @@ class Trade(Base):
 
     symbol = Column(String, nullable=False)
     side = Column(String, nullable=False)
-    price = Column(Float, nullable=False)
-    quantity = Column(Float, nullable=False)
+    price = Column(Numeric(20, 8), nullable=False)
+    quantity = Column(Numeric(20, 8), nullable=False)
 
-    fee = Column(Float, default=0.0)
+    fee = Column(Numeric(20, 8), default=0.0)
     fee_asset = Column(String, nullable=True)
-    realized_pnl = Column(Float, default=0.0)
+    realized_pnl = Column(Numeric(20, 8), default=0.0)
 
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
 

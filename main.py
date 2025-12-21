@@ -10,12 +10,13 @@ from contextlib import asynccontextmanager
 from database.db_manager import db
 from database.repositories import BotRepository, OrderRepository, TradeRepository
 from execution.order_manager import OrderManager
-from execution.balance_manager import BalanceManager
 from exchange.factory import ExchangeFactory
 from strategies.auto_tuner import AutoTuner, OptimizationAction
 from strategies.grid_strategy import GridStrategy
 from utils.logger import setup_logger
 from utils.health import health_system
+
+from utils.security import decrypt_value
 
 logger = setup_logger("main_api")
 
@@ -71,11 +72,19 @@ async def bot_loop(bot_id: int, exchange_api):
 
     try:
         # Initial boot check order sync
+
+        # === PERSISTENT OBJECTS ===
+        # Instantiate once. Repos updated per-tick.
+        # We start with None repos.
+        order_manager = OrderManager(exchange_api)
+        grid_strategy = GridStrategy(order_manager)
+        auto_tuner = AutoTuner()
+
+        # Initial Sync (if needed before loop, do it with fresh session)
         async with db.get_session() as session:
-            order_repo = OrderRepository(session)
-            trade_repo = TradeRepository(session)
-            md_order_manager = OrderManager(exchange_api, order_repo, trade_repo)
-            await md_order_manager.sync_orders(bot_id)
+            order_manager.order_repo = OrderRepository(session)
+            order_manager.trade_repo = TradeRepository(session)
+            await order_manager.sync_orders(bot_id)
 
         while True:
             # A. Watch for Price Update (Real-time Blocking until update)
@@ -97,9 +106,28 @@ async def bot_loop(bot_id: int, exchange_api):
                 # B. Health Heartbeat
                 health_system.heartbeat()
 
+                # Critical: Stop Loss Check
+                if bot.stop_loss and current_price <= bot.stop_loss:
+                    logger.critical(
+                        f"Bot {bot_id}: STOP LOSS HIT ({current_price} <= {bot.stop_loss}). STOPPING BOT."
+                    )
+                    # We need a session to update status.
+                    async with db.get_session() as sl_session:
+                        # Cancel all
+                        # We need managers initialized? They are persistent.
+                        # We can use order_manager directly with sl_session injection?
+                        # Or just use them as is if they don't depend on session for cancellation (they usually use exchange).
+                        # cancel_bot_orders uses order_repo.get_open_orders which needs session.
+                        # So we need to inject session.
+                        order_manager.order_repo = OrderRepository(sl_session)
+                        await order_manager.cancel_bot_orders(bot_id)
+
+                        await BotRepository(sl_session).update_status(bot_id, "STOPPED")
+                    break
+
                 # C. Logic (Requires DB)
                 async with db.get_session() as session:
-                    # Re-instantiate Repos/Managers for this UOW
+                    # Re-instantiate Repos for this UOW
                     # CRITICAL FIX: Re-fetch bot to attach to this session (prevents DetachedInstanceError)
                     bot_repo = BotRepository(session)
                     bot = await bot_repo.get_bot(bot_id)
@@ -107,15 +135,13 @@ async def bot_loop(bot_id: int, exchange_api):
                         logger.warning(f"Bot {bot_id} not found in logic loop.")
                         break
 
-                    order_repo = OrderRepository(session)
-                    trade_repo = TradeRepository(session)
-                    loop_order_mgr = OrderManager(exchange_api, order_repo, trade_repo)
-                    loop_strat = GridStrategy(loop_order_mgr, bot_repo)
-                    # Need auto_tuner?
-                    loop_tuner = AutoTuner()
+                    # Update Persistent Managers with Fresh Repos attached to this session
+                    order_manager.order_repo = OrderRepository(session)
+                    order_manager.trade_repo = TradeRepository(session)
+                    grid_strategy.bot_repo = bot_repo
 
                     # 1. Sync Orders
-                    filled_orders = await loop_order_mgr.sync_orders(bot_id)
+                    filled_orders = await order_manager.sync_orders(bot_id)
 
                     # 2. Grid Logic
                     if filled_orders:
@@ -123,15 +149,15 @@ async def bot_loop(bot_id: int, exchange_api):
                         # 'bot' from above is detached. 'grid_strategy' might need fresh bot if it writes to it?
                         # update_grid reads bot limits.
                         # If it doesn't write to bot, detached is fine.
-                        await loop_strat.update_grid(bot, filled_orders)
+                        await grid_strategy.update_grid(bot, filled_orders)
 
                     # 3. Auto Tune
-                    action = loop_tuner.check_adjustment(bot, current_price)
+                    action = auto_tuner.check_adjustment(bot, current_price)
                     if action != OptimizationAction.NONE:
                         logger.info(f"Bot {bot_id}: AutoTuner triggered {action.value}")
 
                         # a. Calculate New Params
-                        new_params = loop_tuner.calculate_new_params(
+                        new_params = auto_tuner.calculate_new_params(
                             bot, current_price, action
                         )
                         if new_params:
@@ -139,7 +165,7 @@ async def bot_loop(bot_id: int, exchange_api):
                             logger.info(
                                 f"Bot {bot_id}: Cancelling orders for re-grid..."
                             )
-                            await loop_order_mgr.cancel_bot_orders(bot_id)
+                            await order_manager.cancel_bot_orders(bot_id)
 
                             # c. Update Bot Config in DB
                             # We need to use the Repo attached to this session
@@ -151,7 +177,7 @@ async def bot_loop(bot_id: int, exchange_api):
                             # d. Re-Place Grid
                             logger.info(f"Bot {bot_id}: Placing new grid...")
                             # Note: updated_bot is attached to session, ready to use.
-                            await loop_strat.place_initial_grid(
+                            await grid_strategy.place_initial_grid(
                                 updated_bot, current_price
                             )
 
@@ -168,8 +194,11 @@ async def bot_loop(bot_id: int, exchange_api):
                                 await session.commit()
 
             except Exception as e:
-                logger.error(f"Bot {bot_id} Loop Error: {e}")
+                logger.critical(
+                    f"Bot {bot_id} Loop Error: {e}"
+                )  # Upgraded to Critical for Alerting
                 health_system.log_error()
+                # TODO: Send Webhook/Email
                 await asyncio.sleep(5)  # Backoff on error
 
     except asyncio.CancelledError:
@@ -199,7 +228,9 @@ async def lifespan(app: FastAPI):
                     # A. Reconnect Exchange
                     # Assuming Binance for now (Store exchange_id in DB later?)
                     exchange = ExchangeFactory.create_exchange(
-                        "binance", bot.api_key, bot.secret_key
+                        "binance",
+                        decrypt_value(bot.api_key),
+                        decrypt_value(bot.secret_key),
                     )
 
                     # B. Start Loop (Managers are created inside loop pre-check or below?)

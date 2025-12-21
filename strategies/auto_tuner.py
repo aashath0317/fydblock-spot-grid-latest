@@ -1,5 +1,6 @@
 from enum import Enum
 import datetime
+from decimal import Decimal
 from database.models import Bot
 from utils.logger import setup_logger
 
@@ -16,7 +17,7 @@ class AutoTuner:
     def __init__(self, cooldown_minutes: int = 30):
         self.cooldown_minutes = cooldown_minutes
 
-    def check_adjustment(self, bot: Bot, current_price: float) -> OptimizationAction:
+    def check_adjustment(self, bot: Bot, current_price: Decimal) -> OptimizationAction:
         """
         Determines if grid needs adjustment based on 'Auto' logic.
         """
@@ -61,18 +62,18 @@ class AutoTuner:
         return OptimizationAction.NONE
 
     def calculate_new_params(
-        self, bot: Bot, current_price: float, action: OptimizationAction
+        self, bot: Bot, current_price: Decimal, action: OptimizationAction
     ) -> dict:
         """
         Calculates new Lower/Upper limits based on action.
         """
-        risk_percentage = (bot.risk_level or 10) / 100.0
+        risk_percentage = Decimal(bot.risk_level or 10) / Decimal("100")
 
         if action == OptimizationAction.RESET_UP:
             # Standard Reset: Center around current price
             # New range based on Original Risk %
-            new_lower = current_price * (1 - risk_percentage)
-            new_upper = current_price * (1 + risk_percentage)
+            new_lower = current_price * (Decimal("1") - risk_percentage)
+            new_upper = current_price * (Decimal("1") + risk_percentage)
             return {
                 "lower_limit": new_lower,
                 "upper_limit": new_upper,
@@ -90,12 +91,12 @@ class AutoTuner:
 
             # Let's define new bottom as: Current Price - (Current Price * Risk%)
             # This ensures we cover the dip.
-            new_lower = current_price * (1 - risk_percentage)
+            new_lower = current_price * (Decimal("1") - risk_percentage)
 
             # Ensure new lower is actually lower than old lower
             if new_lower >= bot.lower_limit:
-                new_lower = (
-                    bot.lower_limit * 0.95
+                new_lower = bot.lower_limit * Decimal(
+                    "0.95"
                 )  # Force 5% drop if calculated is too close
 
             return {
