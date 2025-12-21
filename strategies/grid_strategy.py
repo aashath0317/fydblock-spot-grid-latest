@@ -118,7 +118,9 @@ class GridStrategy:
             logger.info(f"Bot {bot.id}: Rebalancing via LIMIT Buy @ {limit_price_str}")
 
             try:
-                await self.order_manager.exchange.create_order(
+                import asyncio
+
+                order_response = await self.order_manager.exchange.create_order(
                     symbol=bot.pair,
                     side="BUY",
                     type="LIMIT",
@@ -126,8 +128,37 @@ class GridStrategy:
                     price=limit_price_str,
                     client_order_id=None,
                 )
-                # Wait for fill? Market orders are usually instant.
-                # ExchangeInterface async create_order returns dict with status using 'await', so it waits for API.
+
+                # Polling for Fill (Prevent Race Condition)
+                # We expect immediate fill for marketable limit.
+                order_id = order_response.get("id")
+                if not order_id:
+                    # Should not happen with CCXT
+                    logger.warning(
+                        f"Bot {bot.id}: Rebalance order created but no ID returned."
+                    )
+                else:
+                    for _ in range(20):  # Wait up to 20 * 0.5 = 10 seconds
+                        order_info = await self.order_manager.exchange.fetch_order(
+                            bot.pair, order_id
+                        )
+                        status = order_info.get("status")
+                        if status == "closed":  # CCXT uses 'closed' for filled
+                            logger.info(
+                                f"Bot {bot.id}: Rebalance order {order_id} FILLED."
+                            )
+                            break
+                        elif status == "canceled" or status == "rejected":
+                            raise Exception(f"Rebalance order {status}")
+
+                        await asyncio.sleep(0.5)
+                    else:
+                        # Timeout
+                        logger.error(
+                            f"Bot {bot.id}: Rebalance order {order_id} timed out (not filled in 10s)."
+                        )
+                        # Proceed? Or Fail? If we proceed, we risk error. Fail is safer.
+                        raise Exception("Rebalance order timed out")
             except Exception as e:
                 logger.error(f"Bot {bot.id}: Rebalance Market Buy Failed: {e}")
                 raise  # Stop startup if we can't buy assets

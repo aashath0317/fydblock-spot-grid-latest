@@ -100,8 +100,20 @@ async def bot_loop(bot_id: int, exchange_api):
                 pair = bot.pair  # Extract before loop? Pair shouldn't change.
 
                 # Wait for ticker (No DB involvement)
-                ticker = await exchange_api.watch_ticker(pair)
-                current_price = ticker["price"]
+                # FIX: Non-blocking wait using timeout to allow Health/Stop updates
+                try:
+                    ticker = await asyncio.wait_for(
+                        exchange_api.watch_ticker(pair), timeout=5.0
+                    )
+                    current_price = ticker["price"]
+                except asyncio.TimeoutError:
+                    # Timeout - Pulse health and check basic stop (if available) then retry
+                    health_system.heartbeat()
+                    # Optional: re-check stop command in DB?
+                    # Since we cycle back to loop start, we re-fetch 'bot' in next loop logic?
+                    # Yes, loop re-fetches bot at line 94.
+                    # So we just 'continue' to restart loop logic which checks bot status.
+                    continue
 
                 # B. Health Heartbeat
                 health_system.heartbeat()
