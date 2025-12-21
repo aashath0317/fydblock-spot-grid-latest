@@ -163,15 +163,29 @@ class GridStrategy:
                     )
 
             # Logic:
-            # If we bought at 50000, we want to sell at 50000 + step.
-            # If we sold at 50100, we want to buy back at 50100 - step.
+            # Snap to grid index to prevent drift.
+            # Index = Round((Price - Lower) / Step)
+            # New Price = Lower + Step * (Index +/- 1)
 
-            new_side = "SELL" if filled["side"] == "BUY" else "BUY"
+            # 1. Calculate Index of Filled Order
+            # We use ROUND_HALF_UP logic via Decimal quantize if needed, or simple round() check
+            # Since step is Decimal, we can divide.
 
-            if new_side == "SELL":
-                new_price = filled["price"] + step
+            distance = filled["price"] - bot.lower_limit
+            exact_index = distance / step
+            # Round to nearest integer index
+            grid_index = int(exact_index.to_integral_value(rounding="ROUND_HALF_UP"))
+
+            if filled["side"] == "BUY":
+                # Bought at Index i (Low). Sell at Index i+1 (High).
+                new_side = "SELL"
+                new_index = grid_index + 1
             else:
-                new_price = filled["price"] - step
+                # Sold at Index i (High). Buy at Index i-1 (Low).
+                new_side = "BUY"
+                new_index = grid_index - 1
+
+            new_price = bot.lower_limit + (step * new_index)
 
             # Validation
             if new_price > (bot.upper_limit * Decimal("1.001")) or new_price < (
@@ -246,6 +260,8 @@ class GridStrategy:
                     found_bottom = True
                 except Exception as e:
                     logger.error(f"Bot {bot.id}: Failed to cancel bottom order: {e}")
+                    # ABORT SHIFT to prevent phantom orders
+                    return
             else:
                 logger.warning(
                     f"Bot {bot.id}: No BUY orders found to cancel for shift."
@@ -257,6 +273,9 @@ class GridStrategy:
             )
             # Proceed anyway? If we don't cancel, we might have extra orders.
             # But we must shift limits.
+            # NO: User requirement is to prevent Phantom Orders and desync.
+            # If we didn't cancel the bottom, we shouldn't add a top.
+            return
 
         # 2. (Deferred) Update Limits in DB
         # moved to end

@@ -201,6 +201,12 @@ async def bot_loop(bot_id: int, exchange_api):
                 # TODO: Send Webhook/Email
                 await asyncio.sleep(5)  # Backoff on error
 
+            finally:
+                # Clean up repos to prevent stale session references if logic crashes
+                order_manager.order_repo = None
+                order_manager.trade_repo = None
+                grid_strategy.bot_repo = None
+
     except asyncio.CancelledError:
         logger.info(f"Bot {bot_id}: Loop cancelled.")
         await exchange_api.close()
