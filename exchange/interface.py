@@ -14,6 +14,11 @@ class ExchangeInterface(ABC):
         pass
 
     @abstractmethod
+    async def watch_orders(self, symbol: str) -> List[Dict]:
+        """Waits for order updates via WebSocket."""
+        pass
+
+    @abstractmethod
     async def create_order(
         self,
         symbol: str,

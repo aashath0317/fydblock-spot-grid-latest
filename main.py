@@ -43,188 +43,198 @@ class BotID(BaseModel):
 
 
 # --- Global State ---
-active_bots = {}  # bot_id -> {'task': Task, 'exchange': ExchangeInterface}
+active_bots = {}  # bot_id -> {'tasks': [Task...], 'exchange': ExchangeInterface}
 
 
-async def bot_loop(bot_id: int, exchange_api):
+async def orders_loop(bot_id: int, exchange_api):
     """
-    Real-time WebSocket Loop.
+    WebSocket Loop for Order Updates (Pure WS).
     """
-    logger.info(f"Bot {bot_id}: Async WS Loop started.")
+    logger.info(f"Bot {bot_id}: Orders WS Loop started.")
 
-    # Create persistent session for the loop (or transient, but persistent is easier for now)
-    # WARNING: Long-lived sessions can be problematic. Better to create per-tick or per-action.
-    # BUT OrderManager is stateful with Repo?
-    # Repo is stateless, just holds session. OrderManager is mostly stateless.
-    # Let's instantiate OrderManager with a session that we close on exit?
-    # Actually, proper way:
-    #
-    # while True:
-    #    async with db.get_session() as session:
-    #         # do work
+    order_manager = OrderManager(exchange_api)
+    grid_strategy = GridStrategy(order_manager)
 
-    # However, `watch_ticker` blocks. We don't want to hold session open while waiting for price.
-    #
-    # Refactor:
-    # Loop waits for Price.
-    # ON Price:
-    #   Open Session -> Sync -> Grid Logic -> Close Session.
+    while True:
+        try:
+            # 1. Get Pair (Need DB or assume passed? Fetch once.)
+            async with db.get_session() as session:
+                bot = await BotRepository(session).get_bot(bot_id)
+            if not bot:
+                break
+            pair = bot.pair
 
-    try:
-        # Initial boot check order sync
-
-        # === PERSISTENT OBJECTS ===
-        # Instantiate once. Repos updated per-tick.
-        # We start with None repos.
-        order_manager = OrderManager(exchange_api)
-        grid_strategy = GridStrategy(order_manager)
-        auto_tuner = AutoTuner()
-
-        # Initial Sync (if needed before loop, do it with fresh session)
-        async with db.get_session() as session:
-            order_manager.order_repo = OrderRepository(session)
-            order_manager.trade_repo = TradeRepository(session)
-            await order_manager.sync_orders(bot_id)
-
-        while True:
-            # A. Watch for Price Update (Real-time Blocking until update)
+            # 2. Watch Orders (Blocking)
+            # This blocks until an order update arrives.
             try:
-                # 1. Get Bot Pair (Quick session or cache?)
-                # To minimize DB spam, maybe cache pair? But safe to read.
-                async with db.get_session() as session:
-                    bot = await BotRepository(session).get_bot(bot_id)
+                updated_orders = await exchange_api.watch_orders(pair)
+            except asyncio.TimeoutError:
+                continue
 
+            if not updated_orders:
+                continue
+
+            logger.info(f"Bot {bot_id}: Received {len(updated_orders)} order updates.")
+
+            # 3. Process Logic (Stateful)
+            async with db.get_session() as session:
+                # Attach session
+                order_manager.order_repo = OrderRepository(session)
+                grid_strategy.bot_repo = BotRepository(session)
+
+                # Re-fetch bot within session to avoid detachment
+                bot = await BotRepository(session).get_bot(bot_id)
+
+                # Filter for Fills
+                filled_for_grid = []
+                for o in updated_orders:
+                    # Update matching DB order
+                    if o.get("client_order_id"):
+                        # We prefer updating by client_order_id
+                        status = o["status"]
+                        if status == "closed":
+                            # Filled
+                            await order_manager.order_repo.update_status(
+                                o["client_order_id"], "FILLED", filled=o["filled"]
+                            )
+                            filled_for_grid.append(o)
+                            logger.info(
+                                f"Bot {bot_id}: Order {o['client_order_id']} FILLED."
+                            )
+                        elif status == "canceled":
+                            await order_manager.order_repo.update_status(
+                                o["client_order_id"], "CANCELED"
+                            )
+                        elif status == "open":
+                            # New or partial?
+                            # Update filled qty for partials
+                            await order_manager.order_repo.update_status(
+                                o["client_order_id"], "OPEN", filled=o["filled"]
+                            )
+
+                # Trigger Grid Update
+                if filled_for_grid:
+                    await grid_strategy.update_grid(bot, filled_for_grid)
+
+        except Exception as e:
+            logger.error(f"Bot {bot_id}: Orders Loop Error: {e}")
+            await asyncio.sleep(5)
+
+        finally:
+            # Cleanup
+            order_manager.order_repo = None
+            grid_strategy.bot_repo = None
+
+
+async def price_loop(bot_id: int, exchange_api):
+    """
+    WebSocket Loop for Price Updates (Health, StopLoss, AutoTuner).
+    """
+    logger.info(f"Bot {bot_id}: Price WS Loop started.")
+
+    # Persistent Objects
+    order_manager = OrderManager(exchange_api)
+    grid_strategy = GridStrategy(order_manager)
+    auto_tuner = AutoTuner()
+
+    while True:
+        try:
+            # 1. Fetch Bot to get Pair & Config
+            async with db.get_session() as session:
+                bot = await BotRepository(session).get_bot(bot_id)
+
+            if not bot:
+                logger.warning(f"Bot {bot_id} not found/stopped. Exiting Price Loop.")
+                break
+
+            pair = bot.pair
+
+            # A. Watch Price (Blocking)
+            try:
+                # 5s timeout allows us to check health/stop even if no trades occur
+                ticker = await asyncio.wait_for(
+                    exchange_api.watch_ticker(pair), timeout=5.0
+                )
+                current_price = ticker["price"]
+            except asyncio.TimeoutError:
+                health_system.heartbeat()
+                continue
+
+            # B. Health
+            health_system.heartbeat()
+
+            # C. Stop Loss Check
+            if bot.stop_loss and current_price <= bot.stop_loss:
+                logger.critical(
+                    f"Bot {bot_id}: STOP LOSS HIT ({current_price} <= {bot.stop_loss})."
+                )
+                async with db.get_session() as sl_session:
+                    # Inject session for cancellation
+                    order_manager.order_repo = OrderRepository(sl_session)
+                    await order_manager.cancel_bot_orders(bot_id)
+                    await BotRepository(sl_session).update_status(bot_id, "STOPPED")
+                break
+
+            # D. Auto Tune Actions
+            # We need a new session for logic
+            async with db.get_session() as session:
+                bot_repo = BotRepository(session)
+                # Re-fetch attached bot
+                bot = await bot_repo.get_bot(bot_id)
                 if not bot:
                     break
 
-                pair = bot.pair  # Extract before loop? Pair shouldn't change.
+                # Attach Repos
+                order_manager.order_repo = OrderRepository(session)
+                grid_strategy.bot_repo = bot_repo
 
-                # Wait for ticker (No DB involvement)
-                # FIX: Non-blocking wait using timeout to allow Health/Stop updates
-                try:
-                    ticker = await asyncio.wait_for(
-                        exchange_api.watch_ticker(pair), timeout=5.0
+                # Check Logic
+                action = auto_tuner.check_adjustment(bot, current_price)
+                if action != OptimizationAction.NONE:
+                    logger.info(f"Bot {bot_id}: AutoTuner triggered {action.value}")
+
+                    # Calculate New Params
+                    new_params = auto_tuner.calculate_new_params(
+                        bot, current_price, action
                     )
-                    current_price = ticker["price"]
-                except asyncio.TimeoutError:
-                    # Timeout - Pulse health and check basic stop (if available) then retry
-                    health_system.heartbeat()
-                    # Optional: re-check stop command in DB?
-                    # Since we cycle back to loop start, we re-fetch 'bot' in next loop logic?
-                    # Yes, loop re-fetches bot at line 94.
-                    # So we just 'continue' to restart loop logic which checks bot status.
-                    continue
 
-                # B. Health Heartbeat
-                health_system.heartbeat()
-
-                # Critical: Stop Loss Check
-                if bot.stop_loss and current_price <= bot.stop_loss:
-                    logger.critical(
-                        f"Bot {bot_id}: STOP LOSS HIT ({current_price} <= {bot.stop_loss}). STOPPING BOT."
-                    )
-                    # We need a session to update status.
-                    async with db.get_session() as sl_session:
-                        # Cancel all
-                        # We need managers initialized? They are persistent.
-                        # We can use order_manager directly with sl_session injection?
-                        # Or just use them as is if they don't depend on session for cancellation (they usually use exchange).
-                        # cancel_bot_orders uses order_repo.get_open_orders which needs session.
-                        # So we need to inject session.
-                        order_manager.order_repo = OrderRepository(sl_session)
+                    if new_params:
+                        # Cancel All
+                        logger.info(f"Bot {bot_id}: Cancelling orders for AutoTune...")
                         await order_manager.cancel_bot_orders(bot_id)
 
-                        await BotRepository(sl_session).update_status(bot_id, "STOPPED")
-                    break
-
-                # C. Logic (Requires DB)
-                async with db.get_session() as session:
-                    # Re-instantiate Repos for this UOW
-                    # CRITICAL FIX: Re-fetch bot to attach to this session (prevents DetachedInstanceError)
-                    bot_repo = BotRepository(session)
-                    bot = await bot_repo.get_bot(bot_id)
-                    if not bot:
-                        logger.warning(f"Bot {bot_id} not found in logic loop.")
-                        break
-
-                    # Update Persistent Managers with Fresh Repos attached to this session
-                    order_manager.order_repo = OrderRepository(session)
-                    order_manager.trade_repo = TradeRepository(session)
-                    grid_strategy.bot_repo = bot_repo
-
-                    # 1. Sync Orders
-                    filled_orders = await order_manager.sync_orders(bot_id)
-
-                    # 2. Grid Logic
-                    if filled_orders:
-                        # we need 'bot' object attached to this session or re-fetched?
-                        # 'bot' from above is detached. 'grid_strategy' might need fresh bot if it writes to it?
-                        # update_grid reads bot limits.
-                        # If it doesn't write to bot, detached is fine.
-                        await grid_strategy.update_grid(bot, filled_orders)
-
-                    # 3. Auto Tune
-                    action = auto_tuner.check_adjustment(bot, current_price)
-                    if action != OptimizationAction.NONE:
-                        logger.info(f"Bot {bot_id}: AutoTuner triggered {action.value}")
-
-                        # a. Calculate New Params
-                        new_params = auto_tuner.calculate_new_params(
-                            bot, current_price, action
+                        # Update Config
+                        updated_bot = await bot_repo.update_grid_config(
+                            bot_id, new_params
                         )
-                        if new_params:
-                            # b. Cancel All Orders
-                            logger.info(
-                                f"Bot {bot_id}: Cancelling orders for re-grid..."
+
+                        # Re-Place Grid
+                        logger.info(f"Bot {bot_id}: Placing new grid...")
+                        await grid_strategy.place_initial_grid(
+                            updated_bot, current_price
+                        )
+
+                        # Update Trailing Timestamp
+                        if action == OptimizationAction.EXPAND_DOWN:
+                            updated_bot.last_trailing_update = (
+                                datetime.datetime.utcnow()
                             )
-                            await order_manager.cancel_bot_orders(bot_id)
+                            await session.commit()
 
-                            # c. Update Bot Config in DB
-                            # We need to use the Repo attached to this session
-                            # bot_repo already exists in this scope
-                            updated_bot = await bot_repo.update_grid_config(
-                                bot_id, new_params
-                            )
+        except asyncio.CancelledError:
+            logger.info(f"Bot {bot_id}: Price Loop cancelled.")
+            await exchange_api.close()
+            break
 
-                            # d. Re-Place Grid
-                            logger.info(f"Bot {bot_id}: Placing new grid...")
-                            # Note: updated_bot is attached to session, ready to use.
-                            await grid_strategy.place_initial_grid(
-                                updated_bot, current_price
-                            )
+        except Exception as e:
+            logger.critical(f"Bot {bot_id} Price Loop Error: {e}")
+            health_system.log_error()
+            await asyncio.sleep(5)
 
-                            # e. Update Trailing Timestamp (to prevent rapid-fire expansion)
-                            if action == OptimizationAction.EXPAND_DOWN:
-                                # We need to set 'last_trailing_update'
-                                # Assuming model has this field (SRS said it should).
-                                # If not in model yet, we might need to add it or fail gracefully.
-                                # Let's check model?
-                                # For now, update if attribute exists.
-                                updated_bot.last_trailing_update = (
-                                    datetime.datetime.utcnow()
-                                )
-                                await session.commit()
-
-            except Exception as e:
-                logger.critical(
-                    f"Bot {bot_id} Loop Error: {e}"
-                )  # Upgraded to Critical for Alerting
-                health_system.log_error()
-                # TODO: Send Webhook/Email
-                await asyncio.sleep(5)  # Backoff on error
-
-            finally:
-                # Clean up repos to prevent stale session references if logic crashes
-                order_manager.order_repo = None
-                order_manager.trade_repo = None
-                grid_strategy.bot_repo = None
-
-    except asyncio.CancelledError:
-        logger.info(f"Bot {bot_id}: Loop cancelled.")
-        await exchange_api.close()
-    except Exception as e:
-        logger.critical(f"Bot {bot_id}: Fatal Crash: {e}")
-        health_system.log_error()
+        finally:
+            # Cleanup per iteration references (safety)
+            order_manager.order_repo = None
+            grid_strategy.bot_repo = None
 
 
 # --- Lifecycle ---
@@ -257,8 +267,12 @@ async def lifespan(app: FastAPI):
                     # Wait, look at `bot_loop` signature: `async def bot_loop(bot_id: int, exchange_api):`
                     # Yes, it instantiates managers internally. Perfect.
 
-                    task = asyncio.create_task(bot_loop(bot.id, exchange))
-                    active_bots[bot.id] = {"task": task, "exchange": exchange}
+                    task_price = asyncio.create_task(price_loop(bot.id, exchange))
+                    task_orders = asyncio.create_task(orders_loop(bot.id, exchange))
+                    active_bots[bot.id] = {
+                        "tasks": [task_price, task_orders],
+                        "exchange": exchange,
+                    }
                     logger.info(f"Resumed Bot {bot.id}")
 
                 except Exception as e:
@@ -269,7 +283,8 @@ async def lifespan(app: FastAPI):
     yield
     # Cleanup active bots
     for b_id, bot_data in active_bots.items():
-        bot_data["task"].cancel()
+        for task in bot_data["tasks"]:
+            task.cancel()
         if bot_data.get("exchange"):
             await bot_data["exchange"].close()
     logger.info("System Shutdown.")
@@ -331,8 +346,9 @@ async def start_bot(config: BotCreate, background_tasks: BackgroundTasks):
 
     # 5. Start Loop
     # Note: loop creates its own sessions.
-    task = asyncio.create_task(bot_loop(bot.id, exchange))
-    active_bots[bot.id] = {"task": task, "exchange": exchange}
+    task_price = asyncio.create_task(price_loop(bot.id, exchange))
+    task_orders = asyncio.create_task(orders_loop(bot.id, exchange))
+    active_bots[bot.id] = {"tasks": [task_price, task_orders], "exchange": exchange}
 
     return {"status": "started", "bot_id": bot.id}
 
@@ -341,7 +357,8 @@ async def start_bot(config: BotCreate, background_tasks: BackgroundTasks):
 async def stop_bot(data: BotID):
     bot_id = data.bot_id
     if bot_id in active_bots:
-        active_bots[bot_id]["task"].cancel()
+        for task in active_bots[bot_id]["tasks"]:
+            task.cancel()
         await active_bots[bot_id]["exchange"].close()
 
         async with db.get_session() as session:

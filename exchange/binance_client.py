@@ -49,6 +49,29 @@ class BinanceClient(ExchangeInterface):
             logger.error(f"Error watching ticker for {symbol}: {e}")
             raise
 
+    async def watch_orders(self, symbol: str) -> List[Dict]:
+        await self._init_client()
+        try:
+            # watch_orders may return all open orders or just updates
+            # CCXT Unified API usually returns the list of updated/open orders.
+            orders = await self.client.watch_orders(symbol)
+            return [
+                {
+                    "id": str(o["id"]),
+                    "client_order_id": o.get("clientOrderId"),
+                    "status": o["status"],
+                    "filled": Decimal(str(o["filled"])),
+                    "remaining": Decimal(str(o["remaining"])),
+                    "price": Decimal(str(o["price"])),
+                    "side": o["side"],
+                    "quantity": Decimal(str(o["amount"])),
+                }
+                for o in orders
+            ]
+        except Exception as e:
+            logger.error(f"Error watching orders for {symbol}: {e}")
+            raise
+
     async def create_order(
         self,
         symbol: str,
